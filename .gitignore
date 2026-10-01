@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE local state
+.vscode/*
+!.vscode/settings.json
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Isaac / simulation generated output
+logs/
+outputs/
+runs/
+checkpoints/
+*.log
+
+# Datasets / generated media
+datasets/
+recordings/
+videos/
+
+# Build artifacts
+build/
+dist/
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
