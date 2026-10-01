@@ -270,6 +270,116 @@ def print_control_summary(left_arm, right_arm) -> None:
         "so this scene does not yet have a formal environment action dimension."
     )
 
+def get_single_joint_index(robot, joint_name: str) -> int:
+    """Resolve one joint name to exactly one runtime joint index."""
+
+    joint_indices, joint_names = robot.find_joints(
+        joint_name,
+        preserve_order=True,
+    )
+
+    if len(joint_indices) != 1:
+        raise RuntimeError(
+            f"Expected exactly one joint named '{joint_name}', "
+            f"but found indices={joint_indices}, names={joint_names}"
+        )
+
+    return joint_indices[0]
+
+def run_independent_joint_control_test(
+    sim: SimulationContext,
+    scene: InteractiveScene,
+    left_arm,
+    right_arm,
+) -> None:
+    """Verify that each SO-101 articulation can be commanded independently."""
+
+    sim_dt = sim.get_physics_dt()
+
+    left_shoulder_pan = get_single_joint_index(left_arm, "shoulder_pan")
+    right_shoulder_pan = get_single_joint_index(right_arm, "shoulder_pan")
+
+    print("\n" + "=" * 80)
+    print("INDEPENDENT JOINT CONTROL TEST")
+    print("=" * 80)
+
+    print(f"Left shoulder_pan index:  {left_shoulder_pan}")
+    print(f"Right shoulder_pan index: {right_shoulder_pan}")
+
+    # Start from each robot's default joint configuration.
+    left_target = left_arm.data.default_joint_pos.clone()
+    right_target = right_arm.data.default_joint_pos.clone()
+
+    # -------------------------------------------------------------------------
+    # Phase 1: move only the LEFT shoulder_pan to +30 degrees.
+    # -------------------------------------------------------------------------
+
+    left_target[:, left_shoulder_pan] = torch.deg2rad(
+        torch.tensor(
+            30.0,
+            device=left_arm.device,
+        )
+    )
+
+    print("\n[TEST] Phase 1: LEFT shoulder_pan -> +30 deg")
+    print("[TEST] Right arm should remain at its default pose.")
+
+    left_arm.set_joint_position_target(left_target)
+    right_arm.set_joint_position_target(right_target)
+
+    for _ in range(240):
+        scene.write_data_to_sim()
+        sim.step()
+        scene.update(sim_dt)
+
+    left_pos = left_arm.data.joint_pos[0, left_shoulder_pan].item()
+    right_pos = right_arm.data.joint_pos[0, right_shoulder_pan].item()
+
+    print(
+        f"[RESULT] Left shoulder_pan:  "
+        f"{torch.rad2deg(torch.tensor(left_pos)).item():.2f} deg"
+    )
+    print(
+        f"[RESULT] Right shoulder_pan: "
+        f"{torch.rad2deg(torch.tensor(right_pos)).item():.2f} deg"
+    )
+
+    # -------------------------------------------------------------------------
+    # Phase 2: return left to default and move only the RIGHT shoulder_pan.
+    # -------------------------------------------------------------------------
+
+    left_target = left_arm.data.default_joint_pos.clone()
+    right_target = right_arm.data.default_joint_pos.clone()
+
+    right_target[:, right_shoulder_pan] = torch.deg2rad(
+        torch.tensor(
+            -30.0,
+            device=right_arm.device,
+        )
+    )
+
+    print("\n[TEST] Phase 2: RIGHT shoulder_pan -> -30 deg")
+    print("[TEST] Left arm should return to its default pose.")
+
+    left_arm.set_joint_position_target(left_target)
+    right_arm.set_joint_position_target(right_target)
+
+    for _ in range(240):
+        scene.write_data_to_sim()
+        sim.step()
+        scene.update(sim_dt)
+
+    left_pos = left_arm.data.joint_pos[0, left_shoulder_pan].item()
+    right_pos = right_arm.data.joint_pos[0, right_shoulder_pan].item()
+
+    print(
+        f"[RESULT] Left shoulder_pan:  "
+        f"{torch.rad2deg(torch.tensor(left_pos)).item():.2f} deg"
+    )
+    print(
+        f"[RESULT] Right shoulder_pan: "
+        f"{torch.rad2deg(torch.tensor(right_pos)).item():.2f} deg"
+    )
 
 # -----------------------------------------------------------------------------
 # Main
@@ -357,6 +467,13 @@ def main() -> None:
     print_articulation_info("LEFT", left_arm)
     print_articulation_info("RIGHT", right_arm)
     print_control_summary(left_arm, right_arm)
+
+    run_independent_joint_control_test(
+    sim,
+    scene,
+    left_arm,
+    right_arm,
+)
 
     # Keep the simulation alive for visual inspection.
     sim_dt = sim.get_physics_dt()
