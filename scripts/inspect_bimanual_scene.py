@@ -1,11 +1,13 @@
-"""Bimanual SO-101 foundation tests: scene, independent arms, and grippers.
+"""Bimanual SO-101 foundation: geometry, control, and joint stability diagnostics.
 
 This is a *diagnostic* program, not the pick/handover controller.
-Run with: python scripts/inspect_bimanual_scene.py --test all
+Run with: python scripts/inspect_bimanual_scene.py --test stability --gravity normal
+Compare:  python scripts/inspect_bimanual_scene.py --test stability --gravity off
 
 System flow:
   preflight assets -> launch Isaac Sim -> build scene -> initialize physics
-  -> inspect metadata -> command joint targets -> step physics -> report state
+  -> inspect metadata -> snapshot initial/settled joint states -> command gripper
+  -> step physics -> compare joint changes relative to measured baseline
 
 Stack lock: Isaac Sim 5.1, Isaac Lab v2.3.0, LeIsaac 0.4.0.
 Units: metres, radians, seconds unless a printout explicitly says degrees.
@@ -34,8 +36,12 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
-    "--test", choices=("all", "arms", "grippers"), default="all",
+    "--test", choices=("all", "arms", "grippers", "stability"), default="all",
     help="Which diagnostics to run after building the scene.",
+)
+parser.add_argument(
+    "--gravity", choices=("normal", "off"), default="normal",
+    help="Diagnostic only: compare normal Earth gravity against zero gravity.",
 )
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -68,6 +74,7 @@ CUBE_START_M = (0.0, 0.10, TABLE_TOP_Z_M + CUBE_EDGE_M / 2 + 0.005)
 # This is an exploratory sweep, NOT calibrated OPEN/CLOSED settings.
 GRIPPER_SWEEP_DEG = (0.0, 45.0, 90.0, 0.0)
 STEPS_PER_TARGET = 180
+STABILITY_HOLD_STEPS = 180
 
 
 @configclass
@@ -220,9 +227,102 @@ def test_grippers(sim, scene, left, right) -> None:
           "Do not label values OPEN/CLOSED from joint limits alone.")
 
 
+
+def read_joint_angles_deg(robot) -> torch.Tensor:
+    """Return a detached CPU snapshot, not a live view into simulation data."""
+    return torch.rad2deg(robot.data.joint_pos[0].detach()).cpu().clone()
+
+
+def show_joint_snapshot(label: str, robot, baseline: torch.Tensor | None = None) -> torch.Tensor:
+    """Report every joint and optional change relative to a named snapshot."""
+    values = read_joint_angles_deg(robot)
+    print(f"\n  {label}")
+    for idx, name in enumerate(robot.joint_names):
+        reference = degrees(robot.data.default_joint_pos[0, idx].item())
+        delta_default = values[idx].item() - reference
+        if baseline is None:
+            print(f"    {name:<16} measured={values[idx].item():+8.3f}° "
+                  f"default={reference:+8.3f}° offset={delta_default:+8.3f}°")
+        else:
+            delta_baseline = values[idx].item() - baseline[idx].item()
+            print(f"    {name:<16} measured={values[idx].item():+8.3f}° "
+                  f"from baseline={delta_baseline:+8.3f}° "
+                  f"from default={delta_default:+8.3f}°")
+    return values
+
+
+def test_joint_stability(sim, scene, left, right) -> None:
+    """Separate initial/default offsets from motion induced by jaw commands.
+
+    Controls: both articulations receive full default joint-position targets.
+    Observations: initial state, post-hold baseline, then each gripper sweep.
+    Does not assume that a visual jaw gap equals a joint-position offset.
+    """
+    print("\n=== JOINT-STABILITY DIAGNOSTIC ===")
+    robots = (("LEFT", left), ("RIGHT", right))
+    for side, robot in robots:
+        show_joint_snapshot(f"{side}: immediately after sim.reset()", robot)
+
+    left_default, right_default = command_defaults(left, right)
+    left.set_joint_position_target(left_default)
+    right.set_joint_position_target(right_default)
+    advance(sim, scene, STABILITY_HOLD_STEPS)
+
+    baseline = {}
+    for side, robot in robots:
+        baseline[side] = show_joint_snapshot(
+            f"{side}: after holding default pose for {STABILITY_HOLD_STEPS} steps", robot
+        )
+
+    gripper_ids = {side: joint_index(robot, "gripper") for side, robot in robots}
+    for active_side, active_robot, other_robot in (
+        ("LEFT", left, right), ("RIGHT", right, left)
+    ):
+        print(f"\n  {active_side}: command gripper without changing arm targets")
+        for target_deg in GRIPPER_SWEEP_DEG:
+            left_target, right_target = command_defaults(left, right)
+            target = left_target if active_side == "LEFT" else right_target
+            target[:, gripper_ids[active_side]] = torch.deg2rad(
+                torch.tensor(target_deg, device=active_robot.device)
+            )
+            left.set_joint_position_target(left_target)
+            right.set_joint_position_target(right_target)
+            advance(sim, scene, STEPS_PER_TARGET)
+
+            measured = read_joint_angles_deg(active_robot)
+            reference = baseline[active_side]
+            # Full six-joint snapshot is preserved. The arm deviation excludes
+            # gripper (joint index 5), which is *deliberately* commanded.
+            arm_delta = (measured[:5] - reference[:5]).abs()
+            biggest_arm_idx = int(arm_delta.argmax().item())
+            grip_idx = gripper_ids[active_side]
+            print(
+                f"    target={target_deg:5.1f}° | gripper={measured[grip_idx].item():7.3f}° "
+                f"| max arm change since hold={arm_delta.max().item():6.3f}° "
+                f"({active_robot.joint_names[biggest_arm_idx]})"
+            )
+            if target_deg == GRIPPER_SWEEP_DEG[-1]:
+                show_joint_snapshot(f"{active_side}: after final 0° command", active_robot, reference)
+
+        inactive_side = "RIGHT" if active_side == "LEFT" else "LEFT"
+        show_joint_snapshot(
+            f"{inactive_side}: after opposite gripper sweep",
+            other_robot,
+            baseline[inactive_side],
+        )
+
+    print("\n[INTERPRETATION] Compare 'offset' after reset with the post-hold state;")
+    print("then compare 'max arm change since hold' during each gripper sweep.")
+    print("A nonzero static offset is not evidence that opening the jaw moved the arm.")
+    print("[COMPARISON] Repeat the same test with --gravity normal and --gravity off.")
+    print("If the post-hold offsets shrink strongly in zero gravity, gravity loading is implicated.")
+    print("Do not use zero gravity for the actual manipulation benchmark.")
+
 def main() -> None:
     print(f"[PREFLIGHT] robot asset: {ROBOT_USD}")
-    sim = SimulationContext(sim_utils.SimulationCfg(device=args.device))
+    gravity = (0.0, 0.0, -9.81) if args.gravity == "normal" else (0.0, 0.0, 0.0)
+    print(f"[EXPERIMENT] Gravity mode: {args.gravity} | acceleration={gravity} m/s²")
+    sim = SimulationContext(sim_utils.SimulationCfg(device=args.device, gravity=gravity))
     sim.set_camera_view(eye=(1.25, -1.25, 0.85), target=(0.0, 0.05, 0.15))
 
     config = BimanualSceneCfg(num_envs=1, env_spacing=2.0)
@@ -233,9 +333,13 @@ def main() -> None:
 
     inspect_scene(scene)
     left, right = scene["left_arm"], scene["right_arm"]
+    # Stability is run first when requested so the "immediately after reset"
+    # measurements are not contaminated by the preceding arm-control test.
+    if args.test in ("all", "stability"):
+        test_joint_stability(sim, scene, left, right)
     if args.test in ("all", "arms"):
         test_independent_arms(sim, scene, left, right)
-    if args.test in ("all", "grippers"):
+    if args.test == "grippers":
         test_grippers(sim, scene, left, right)
 
     print("\n[INFO] Tests complete. Close the Isaac Sim window to exit.")
