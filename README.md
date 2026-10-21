@@ -69,10 +69,43 @@ The original shared scene and historical diagnostics remain unchanged.
 After the environment activation below:
 
 ```bash
-# Finite measured approach or physical pickup. Omit --headless for the viewer.
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/run_manipulation.py --headless --stage approach --episodes 3
+# GUI replay of the verified milestones. These commands open the simulator.
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/run_manipulation.py --stage approach
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/run_manipulation.py --stage pickup
+# Automated regression runs the same physics/controller with rendering disabled.
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/run_manipulation.py --headless --stage pickup --episodes 3
 ```
+
+GUI mode is the default. After a successful evaluation the final scene stays
+open, frozen for inspection, until you close its window. Add `--exit-after` for
+a finite GUI run. Both arms and the bin are visible in the default camera.
+Headless testing does not change any script's default into headless mode.
+Each run records a timestamped stage report with source hashes as well as the
+latest `simulation.json`; generated evidence stays in ignored `outputs/`.
+
+Transport and receiver work is in progress on the feature branch. One earlier
+transport trial reached the central handover region with maximum relative cube
+slip 0.0462 mm and rotation 0.185 degrees; this does **not** prove transfer.
+The receiving approach is being corrected because a joint-linear path collided
+with the cube despite feasible endpoints. Experimental GUI command:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/run_manipulation.py --stage handover
+```
+
+This command must report `handover_success: true` before transfer can be claimed.
+Bin placement and full-task evaluation are implemented but still experimental:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/run_manipulation.py --stage full
+```
+
+The full stage requires right-only support after donor release, both arms to
+retreat, the entire cube to stay inside the bin for three seconds, floor support
+of 0.3–0.7 N, linear speed below 0.01 m/s and angular speed below 0.1 rad/s.
+It cannot report full success from merely reaching the bin or opening a jaw.
+`simulation.json` also checkpoints the active phase and partial measurements
+every two simulated seconds, so interrupted runs can be diagnosed.
 
 The first nominal-path validation takes about 3.5 minutes; valid generated plans
 are cached using asset/model/planner fingerprints. Outputs are ignored under
@@ -136,8 +169,8 @@ interactive diagnostics keep their viewer open until closed.
 | File | Purpose, inputs / outputs, status |
 | --- | --- |
 | `scripts/so101_model.py` | Reusable CPU USD geometry, FK and bounded multi-start IK; USD → model and `outputs/controller/offline.json`. Run `python scripts/so101_model.py` with bundled USD paths below. |
-| `scripts/so101_planning.py` | Imported collision/path checks, lift planning and coupled handover feasibility search. Conservative envelopes + triangle/box tests; no simulator or CLI side effects. Handover endpoints are exploratory, not validated transfers. |
-| `scripts/run_manipulation.py` | Finite `--stage model/approach/pickup`, `--episodes`, `--output-dir`; scene + generated plans → measured JSON outcomes. Maintained physics evaluator. |
+| `scripts/so101_planning.py` | Imported collision/path checks, lift and coupled handover planning, Cartesian receiver/withdrawal legs, loaded bin planning. Conservative envelopes + triangle/box tests; no simulator or CLI side effects. Physical gates are separate. |
+| `scripts/run_manipulation.py` | `--stage model/approach/pickup/transport/handover/full`, `--episodes`, `--output-dir`; GUI by default, optional `--headless` / `--exit-after`. Scene + plans → checkpointed and timestamped JSON outcomes. Pickup/transport verified; transfer/placement experimental. |
 | `tests/test_so101_model.py` | Five CPU tests for containment, independent USD FK, FK/IK round trips, unreachable targets and opening geometry. Run with the bundled USD paths below. |
 | `scripts/inspect_task_layout.py` | Shared task scene and live FK inspection; USD + fixed layout → console poses. Active scene foundation; importing launches Kit. |
 | `scripts/audit_so101_finger_geometry_v2.py` | Maintained geometry/jaw diagnostic; USD and optionally measured body transforms → hierarchy, geometry CSV, surface sections and JSON in `outputs/finger_audit`. `--headless`, `--offline`, `--output-dir` supported. Not a calibrated TCP. |
@@ -152,7 +185,8 @@ interactive diagnostics keep their viewer open until closed.
 | `AGENTS.md` | User-provided operating contract, preserved. |
 | `.gitignore`, `.vscode/settings.json` | Repository hygiene and existing editor configuration. |
 
-The maintained controller currently covers pickup only. Historical diagnostics
+The maintained controller includes the complete task sequence behind measured
+stage gates; transfer and placement are still under validation. Historical diagnostics
 are retained in place; nothing has been deleted. `outputs/` and Python caches are
 ignored generated evidence, not source. No remaining unknown source files were
 found in the initial inventory.
