@@ -11,15 +11,9 @@ right SO-101 places the cube into a target bin.
 
 ## Current milestone
 
-Build the deterministic simulation foundation before any imitation learning.
-
-Initial development target:
-
-- two SO-101 follower arms
-- simple table/workspace
-- one cube
-- articulation inspection
-- independent left/right control
+Deterministic physical pickup and lift are simulation-verified in three repeated
+episodes. Bimanual handover, placement and full-task success remain unverified.
+Training and dataset generation remain gated on the complete deterministic task.
 
 ## Validated simulation stack
 
@@ -37,14 +31,55 @@ compatibility problem requires a change.
 
 ## Current evidence (2026-10-21)
 
-Geometry audit now reads all three collision meshes, including instance proxies
-with USD purpose `guide`. Each mesh's bounds are checked independently against
-all transformed vertices (1 micrometre tolerance). Authored surfaces are inputs
-to convex decomposition; they do not certify cooked PhysX contact geometry.
-Both jaws tracked 0/45/90/0 degrees within 0.012 degrees, with zero measured cube
-drift. The finite headless audit exits 0 after clearing the Isaac Lab STOP callback. M1 remains incomplete: contact surfaces, 40 mm cube fit and TCP require
-validation. No IK, collision-free approach, pickup or handover is claimed.
-See [handoff](docs/ROBOTICS_CODEX_HANDOFF.md) for measurements and limitations.
+- Human verified the intended finger surfaces, jaw motion and stationary cube.
+- Full-footprint triangle geometry defines the TCP relative to the gripper link:
+  translation `(0.0141000004, 0, -0.09)` m, identity rotation. X closes the jaws,
+  Y spans pad width, and -Z is approach. A 40 mm cube plus a 1 mm-per-side test
+  margin clears the authored finger meshes at a 45-degree opening.
+- Multi-start bounded IK respects five-arm-joint limits. A downward pregrasp at
+  120 mm height is infeasible; the validated pregrasp is 55 mm above the table.
+- HOME → open → pregrasp → grasp passes 3,794 nominal collision samples, followed
+  by measured force and cube-drift checks at every physics tick. Three approaches
+  had zero cube drift before contact and final TCP error below 0.001 mm.
+- Physical closure at approximately 21.71 degrees develops 3.39/3.75 N pad forces.
+  Three pickup episodes lifted the cube to at least 73.27 mm centre height and
+  held it for 3 seconds, with both pad forces above 1.57 N. No attachment or
+  task-time object state writes are used. These are deterministic repeated
+  episodes, not randomized robustness statistics or full-task success.
+
+Authored triangles differ from cooked PhysX hulls. Conservative envelopes reject
+unsafe nominal paths; actual tracking and contacts are checked independently.
+A 1 N preload failed to lift and was correctly rejected. Gravity feed-forward
+was necessary to prevent arm sag and unintended cube contact during approach.
+See [handoff](docs/ROBOTICS_CODEX_HANDOFF.md) for failures and measured evidence.
+
+## Architecture and controller
+
+`so101_model.py` reads the pinned USD and provides transforms, mesh geometry and
+IK. `so101_planning.py` validates nominal paths and a predicted carried-cube
+volume. `run_manipulation.py` reuses `inspect_task_layout.py`, applies smooth
+actuator commands plus bounded gravity torque, monitors physical contacts, and
+records episode outcomes. Only reset writes robot/cube state directly.
+
+The controller gives fixed table/bin shapes kinematic rigid-body representation
+so GPU contact filters can observe them; their shapes and poses remain fixed.
+It checks measured cube support against its 50 g weight before proceeding.
+The original shared scene and historical diagnostics remain unchanged.
+
+After the environment activation below:
+
+```bash
+# Finite measured approach or physical pickup. Omit --headless for the viewer.
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/run_manipulation.py --headless --stage approach --episodes 3
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/run_manipulation.py --headless --stage pickup --episodes 3
+```
+
+The first nominal-path validation takes about 3.5 minutes; valid generated plans
+are cached using asset/model/planner fingerprints. Outputs are ignored under
+`outputs/controller/`: `simulation.json` contains stage outcomes, per-episode
+measurements, failure/reset evidence and sampled state traces. Exit 0 means the
+**requested stage** passed; full-task success remains false until transfer and
+placement are implemented. Exit 1 means a prerequisite or objective failed.
 
 ## Run in the existing environment
 
@@ -86,6 +121,7 @@ export PYTHONPATH="$USD_LIB${PYTHONPATH:+:$PYTHONPATH}"
 export LD_LIBRARY_PATH="$USD_LIB/bin:$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 python scripts/audit_so101_finger_geometry_v2.py --offline --output-dir outputs/finger_audit_offline
 python tests/test_finger_geometry.py
+python tests/test_so101_model.py
 ```
 
 Use a fresh activated shell for the simulation commands after this CPU-only
@@ -99,6 +135,10 @@ interactive diagnostics keep their viewer open until closed.
 
 | File | Purpose, inputs / outputs, status |
 | --- | --- |
+| `scripts/so101_model.py` | Reusable CPU USD geometry, FK and bounded multi-start IK; USD → model and `outputs/controller/offline.json`. Run `python scripts/so101_model.py` with bundled USD paths below. |
+| `scripts/so101_planning.py` | Imported collision/path checks, lift planning and coupled handover feasibility search. Conservative envelopes + triangle/box tests; no simulator or CLI side effects. Handover endpoints are exploratory, not validated transfers. |
+| `scripts/run_manipulation.py` | Finite `--stage model/approach/pickup`, `--episodes`, `--output-dir`; scene + generated plans → measured JSON outcomes. Maintained physics evaluator. |
+| `tests/test_so101_model.py` | Five CPU tests for containment, independent USD FK, FK/IK round trips, unreachable targets and opening geometry. Run with the bundled USD paths below. |
 | `scripts/inspect_task_layout.py` | Shared task scene and live FK inspection; USD + fixed layout → console poses. Active scene foundation; importing launches Kit. |
 | `scripts/audit_so101_finger_geometry_v2.py` | Maintained geometry/jaw diagnostic; USD and optionally measured body transforms → hierarchy, geometry CSV, surface sections and JSON in `outputs/finger_audit`. `--headless`, `--offline`, `--output-dir` supported. Not a calibrated TCP. |
 | `tests/test_finger_geometry.py` | `python tests/test_finger_geometry.py` with USD paths above; analytic triangle inputs → three unittest checks for face-interior intersections, degenerate/parallel triangles and failing prerequisites. |
@@ -112,8 +152,8 @@ interactive diagnostics keep their viewer open until closed.
 | `AGENTS.md` | User-provided operating contract, preserved. |
 | `.gitignore`, `.vscode/settings.json` | Repository hygiene and existing editor configuration. |
 
-There is no production manipulation controller yet. Historical diagnostics are
-retained in place; nothing has been deleted. `outputs/` and Python caches are
+The maintained controller currently covers pickup only. Historical diagnostics
+are retained in place; nothing has been deleted. `outputs/` and Python caches are
 ignored generated evidence, not source. No remaining unknown source files were
 found in the initial inventory.
 
@@ -124,3 +164,13 @@ Keep authored geometry, actual body pose and effective physical contact distinct
 
 API references: [OpenUSD bounds cache](https://openusd.org/release/api/class_usd_geom_b_box_cache.html)
 and [Isaac Sim 5.1 application lifecycle](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/py/source/extensions/isaacsim.simulation_app/docs/index.html).
+
+
+## Learning notes / code map
+
+Start with `SO101Model.fk`: each child transform composes the parent joint frame,
+axis rotation and inverse child joint frame. `ik` adds bounds and checks the
+achieved pose rather than trusting solver convergence alone. `CollisionWorld`
+separates conservative geometry rejection from runtime force evidence.
+`Episode.run` shows the reset/approach/closure/lift/hold sequence and the measured
+conditions required for success. The handover solver is a feasibility study only.

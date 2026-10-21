@@ -137,3 +137,100 @@ failed test with status 0. Unit tests (3), py_compile and git diff --check passe
 GUI appearance still needs human inspection; headless marker construction is
 not evidence of visual correctness. The superseded untracked calibration
 script's SHA-256 was unchanged after this work.
+
+## Controller development — 2026-10-21 (in progress)
+
+Human checkpoint accepted: user reports both jaws move correctly, yellow marker
+ends touch intended inner surfaces at 0/45 degrees, cube stays still. Marker
+visibility does not enter the triangle/pose measurements; no render-only repair
+is needed for measurement validity.
+
+New reusable CPU model reads all six joint frames/limits and 17 collision meshes
+from the existing USD. Five arm joints use deterministic multi-start bounded
+least-squares IK, with either position + approach direction or a requested full
+orientation that is rejected if infeasible. The original downward pregrasp at
+z=0.12 m is infeasible. The selected pregrasp is (-0.34,-0.04,0.055) m; grasp is
+(-0.34,-0.04,0.022) m. Rotation is identity in world coordinates, aligning cube
+faces. TCP is (0.0141000004,0,-0.09) m in the gripper rigid link, rotation identity:
+X closure, Y pad width, -Z approach. This uses the fixed finger's full cube YZ
+footprint, including ridges, with 2 mm initial fixed-side clearance.
+
+Authored footprint aperture at 0/15/25/35/45 degrees: 15.800/31.994/40.672/50.597/
+62.962 mm. A 42 mm test box (40 mm cube plus 1 mm per side) intersects the moving
+finger through 35 degrees and clears both meshes at 45 degrees. Width alone is
+insufficient because the jaw is inclined. At 90 degrees no opposing surface
+remains in the footprint. Triangle tests include containment, not only surface
+crossings. Physical closure/contact remains a separate gate.
+
+Offline path validation: 473 opening samples, 3,040 HOME/open-to-pregrasp samples,
+281 descent samples; all accepted. Triangle/box checks for the cube, conservative
+convex envelopes for self/opposite/bin, actual vertex/table height. Adjacent USD
+joint interfaces and fixed base/table mounting are excluded explicitly. A 0.6 m
+lever-arm bound controls sample spacing with 1 mm nominal collision margin.
+This bounds nominal interpolation only; tracking error and cooked-hull contact
+must be checked in physics. Planning took 205 seconds with one BLAS/OpenMP thread;
+valid plans are cached with asset/model/approach-planner fingerprints.
+
+Physics instrumentation requires kinematic rigid actors for the fixed table/bin:
+purely static colliders produced unsupported GPU contact-filter warnings. Their
+poses/dimensions are unchanged; the shared baseline scene source is unchanged.
+A reset prerequisite verifies the 50 g cube has 0.3–0.7 N table support (expected
+0.49 N), preventing missing force data from being interpreted as clear contact.
+Both robots have pairwise force matrices against the cube, table/bin and all
+robot links; forbidden forces >=0.05 N fail execution.
+
+First uncompensated approach failed on 0.1421 N unintended fixed-finger/cube
+contact during pregrasp travel. Added actuator gravity feed-forward using the
+pinned PhysX API, leaving gravity and original PD gains/limits enabled. Corrected
+approach and then three repeated reset+approach episodes exited 0: cube drift
+0.0 mm, final TCP position error 0.000329 mm, maximum moving TCP tracking error
+1.302 mm, gravity torque <=0.633 N m. Live FK versus measured link transforms
+agreed within 0.000206 mm / 0.000078 degrees throughout waypoint checks. Report
+precision reflects simulator arithmetic, not real-world calibration accuracy.
+
+Evidence: `outputs/controller/approach_3episodes.json`,
+`outputs/controller/approach_repeated.log`, generated `plan.json` and
+`calibration.json`. Five model tests passed: closed-box containment/separation,
+independent USD-rest FK, three FK/IK round trips and limits, unreachable-target
+rejection, and open-versus-closed cube geometry. Earlier three audit tests remain.
+Pickup implementation is being tested; no handover or placement result exists.
+
+### Verified pickup milestone
+
+After the 1 N preload failure (maximum cube height only 20.46 mm, lost both pad
+contacts), a measured >=3 N preload succeeded without changing friction, gravity,
+cube mass, solver settings or actuator gains. Final command:
+
+```bash
+source /home/rynem8/miniforge3/etc/profile.d/conda.sh
+conda activate leisaac-sim
+export LEISAAC_ASSETS_ROOT=/home/rynem8/robotics/leisaac/assets
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 timeout --signal=TERM --kill-after=10s 300s python scripts/run_manipulation.py --headless --stage pickup --episodes 3
+```
+
+Final evaluator run: exit 0, pickup **3/3**, lift/hold **3/3**, full task **0/3**
+(not implemented). Same deterministic initial conditions, not randomized trials.
+Each episode: 34.7833 s simulated including reset; 3 s hold; minimum cube centre
+height 73.2735 mm (lift >53 mm above its initial centre); minimum hold pad forces
+1.6050 / 1.5785 N; relative hold drift <0.0002 mm (simulation precision only).
+Closure measured 21.7056 degrees with forces 3.3892 / 3.7540 N. Peak joint speed
+1.084 rad/s and applied actuator torque 0.835 N m, below existing 10 rad/s / 10 N m
+limits. Peak TCP tracking error during loaded motion was 4.113 mm; during approach
+<=1.308 mm. Cube drift before intended contact was zero in all three episodes.
+No forbidden pairwise force >=0.05 N was reported. Reset after each held-cube
+trial restored the next starting cube pose and independently checked weight
+support; no task-time object write or artificial attachment exists.
+
+Five model tests plus three legacy geometry tests passed; all new source modules
+compile. Reports include per-episode counts, FK errors, force/pose traces and
+object orientation. Failed attempts exit nonzero and attempt an explicit episode
+reset, recording whether that reset succeeds. This failure-reset path is
+implemented but has not yet been exercised after its addition.
+
+Coupled handover feasibility: nominal point (0,-0.27,0.18) m yielded 7 solutions
+for one orthogonal-face grasp arrangement and 5 for its alternate. These passed
+inter-arm conservative-envelope endpoint checks; other proposed points
+(0,-0.24,0.18) and (0,-0.20,0.18) yielded no candidates in this bounded search.
+Neither transport paths, loaded orientation stability nor physical transfer have
+been verified. The original (0,0.015,0.18) remains unproven. Further work must use
+the actual held-cube transform, not assume its orientation equals the TCP.
