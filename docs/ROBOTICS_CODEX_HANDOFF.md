@@ -234,3 +234,66 @@ inter-arm conservative-envelope endpoint checks; other proposed points
 Neither transport paths, loaded orientation stability nor physical transfer have
 been verified. The original (0,0.015,0.18) remains unproven. Further work must use
 the actual held-cube transform, not assume its orientation equals the TCP.
+
+### Continuation: receiver and bin integration (2026-10-21, in progress)
+
+The following supersedes the transport limitation above; it does not yet
+establish complete manipulation success.
+
+- `transport_pass.json`: earlier loaded transport passed once, maximum slip
+  0.046165 mm / 0.18477 degrees, centre height 174.599 mm. Its receiver pose had
+  insufficient approach margin, so a different coupled pose was selected.
+- New nominal receiver: joint-linear pregrasp-to-grasp failed `cube:gripper`
+  at sample 85/628. Replacing this with 16 Cartesian IK legs passed all
+  intermediate geometry checks (`receiver_nominal.json`). Runtime replans at
+  the actually measured cube pose; nominal clearance is not a physics pass.
+- `pickup_regression.log`, report `pickup_20261021T201958882650Z.json`: updated
+  controller passed pickup/lift 3/3 again, minimum height 73.2735 mm, sustained
+  pad forces >=1.5785 N, zero precontact cube drift. Five model tests and three
+  geometry tests passed. No dependency, asset, friction or driver changes.
+- `handover.log`: the new transport orientation failed on measured cube slip
+  3.94 mm / 10.10 degrees; pad forces fell to about 1.1 N. The 10-degree gate
+  rejected the run. Failure reset then passed, including 0.4905 N table support.
+  This is now evidence that the failure-reset path executes successfully.
+- Bounded jaw-force feedback was added for loaded transport (3–4 N target
+  band, at most 0.02 degree command change per physics tick, 15–30 degree command
+  bounds). Contact, actuator and slip gates remain enabled. Its physical
+  handover evaluation is in progress in `handover_force_control.log`.
+- Bin feasibility: a right-hand target near (0.34,-0.04,0.11) m with a 15-degree
+  tilted approach has >5 degrees joint margin. A nominal carried path passed
+  2,379 samples after donor withdrawal. This assumes the measured cube transform
+  remains held and is not evidence of physical placement. Withdrawal and full
+  bin evaluation are being integrated; `--stage full` is experimental.
+
+GUI is the default for every maintained simulator entry point. In the main
+controller, successful GUI evaluation freezes the final scene and leaves the
+window open; `--exit-after` opts into finite GUI execution. `--headless` remains
+an explicit automated-test option. Each finished/failed run writes a timestamped
+stage JSON with source hashes; `simulation.json` is also updated. Generated
+reports/logs remain ignored and are not published to GitHub.
+
+Publication: terminal HTTPS push failed because no credential helper supplied a
+username; SSH had no existing trusted GitHub host key. The connected GitHub app
+published the **exact tree** of verified local commit `f218911` on feature branch
+`feat/fingertip-geometry-calibration`, remote commit `c907190`. Tree hash matched
+`6b9f0eee5dfca8a005be0042dd6bc9395bb15919`. This is an API snapshot commit with
+a different commit ID, not a claim that local history was pushed unchanged.
+`main` was not changed. Further tested changes will update this feature branch.
+
+Force feedback result: transport passed with maximum slip **0.10977 mm**, rotation
+**0.17736 degrees**, hold pad forces >=**3.1138 N**, cube height **175.535 mm**.
+The actual receiver path and all 16 Cartesian approach legs executed without
+forbidden contact. Strong receiving closure then failed at **5.21 mm** relative
+slip / **1.99 degrees**: both compliant arms deflected while squeezing the shared
+cube. Right pad forces rose from 1.02/2.45 N to 2.54/4.67 N before failure.
+The next evaluation uses 1 N receiving preload during dual support (>=0.6 N
+after settling), then 3–4 N right-hand feedback during donor release/right-only
+hold. This is a control change, not an actuator-gain or physics-stack change.
+The existing slip gates remain unchanged. `full_first.log` records that trial.
+
+`--stage full` now integrates donor withdrawal, loaded bin motion, release,
+right-arm retreat and three seconds of measured cube containment, floor support
+(0.3–0.7 N), linear speed <0.01 m/s and angular speed <0.1 rad/s. These are
+implemented acceptance conditions, not a passed result yet. Active phase and
+partial traces checkpoint every 120 physics ticks. Failure traces are copied
+before reset so recovery motion cannot overwrite the evidence.

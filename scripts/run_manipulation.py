@@ -1,10 +1,11 @@
-"""Finite deterministic SO-101 pickup evaluation in the existing task scene.
+"""Deterministic SO-101 manipulation evaluation in the existing task scene.
 
 Run: python scripts/run_manipulation.py --headless --stage approach --episodes 1
 Only episode reset writes object/joint state. Task motion uses actuator targets.
 """
 from __future__ import annotations
 import argparse
+import copy
 import json
 import hashlib
 import inspect
@@ -14,11 +15,13 @@ from pathlib import Path
 import sys
 import time
 import traceback
+from datetime import datetime, timezone
 
 parser = argparse.ArgumentParser(add_help=False)
-parser.add_argument('--stage', choices=('model','approach','pickup'), default='approach')
+parser.add_argument('--stage', choices=('model','approach','pickup','transport','handover','full'), default='approach')
 parser.add_argument('--episodes',type=int,default=1)
 parser.add_argument('--output-dir',type=Path,default=Path('outputs/controller'))
+parser.add_argument('--exit-after',action='store_true',help='Close the GUI after evaluation instead of preserving the final view')
 options, rest = parser.parse_known_args()
 sys.argv=[sys.argv[0],*rest]
 import inspect_task_layout as layout
@@ -26,8 +29,8 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 import omni.physics.tensors as tensors
-from so101_model import SO101Model, calibrate, jsonable, JOINT_NAMES, LINK_NAMES
-from so101_planning import plan_pickup, plan_lift, CollisionWorld, fingerprint
+from so101_model import SO101Model, calibrate, jsonable, transform, apply, box_mesh, JOINT_NAMES, LINK_NAMES
+from so101_planning import plan_pickup, plan_lift, plan_transport, plan_receiver, plan_placement, transport_fingerprint, CollisionWorld, fingerprint
 
 
 class Episode:
@@ -45,6 +48,7 @@ class Episode:
                                                             max_contact_data_count=4096)
                        for arm in ('Left_Robot','Right_Robot')]
         self.cube_contact=self.physics.create_rigid_contact_view(self.root+'Cube',filter_patterns=[self.root+'Table'])
+        self.bin_contact=self.physics.create_rigid_contact_view(self.root+'Cube',filter_patterns=[self.root+'BinFloor'])
         for v in self.contacts:
             if v.sensor_count!=7 or v.filter_count!=len(self.filters):
                 raise RuntimeError(f'Contact prerequisites: sensors={v.sensor_count}, filters={v.filter_count}')
@@ -58,9 +62,20 @@ class Episode:
         self.max_feedforward_Nm=0.
         self.max_speed_rad_s=0.
         self.max_applied_torque_Nm=0.
+        self.transport_reference=None
+        self.max_transport_slip_m=0.
+        self.max_transport_rotation_deg=0.
+        self.reference_robot='left'
+        self.contact_arms={'Left_Robot'}
+        self.right_target=np.zeros(6)
+        self.left_target=np.zeros(6)
+        self.pad_forces={}
+        self.active_grips={}
+        self.checkpoint=None
 
-    def measured_q(self):
-        return self.left.data.joint_pos[0,self.ids].detach().cpu().numpy().copy()
+    def measured_q(self,side='left'):
+        arm=self.left if side=='left' else self.right
+        return arm.data.joint_pos[0,self.ids].detach().cpu().numpy().copy()
 
     def tcp(self):
         idx=layout.body_index(self.left,'gripper')
@@ -68,14 +83,24 @@ class Episode:
         q=self.left.data.body_quat_w[0,idx].cpu().numpy()
         return p+Rotation.from_quat(np.roll(q,-1)).apply(self.model.tcp[:3,3])
 
-    def check_fk(self):
-        poses=self.model.fk(self.measured_q())
+    def cube_in_tcp(self,side='left'):
+        cube_pose=transform(self.cube.data.root_pos_w[0].cpu().numpy(),
+                            Rotation.from_quat(np.roll(self.cube.data.root_quat_w[0].cpu().numpy(),-1)).as_matrix())
+        base=self.model.base.copy()
+        if side=='right':base[0,3]=.25
+        return np.linalg.inv(self.model.tcp_pose(self.measured_q(side),base))@cube_pose
+
+    def check_fk(self,side='left'):
+        arm=self.left if side=='left' else self.right
+        base=self.model.base.copy()
+        if side=='right':base[0,3]=.25
+        poses=self.model.fk(self.measured_q(side),base)
         errors=[]
         angles=[]
         for name in LINK_NAMES:
-            idx=layout.body_index(self.left,name)
-            actual_p=self.left.data.body_pos_w[0,idx].cpu().numpy()
-            actual_q=self.left.data.body_quat_w[0,idx].cpu().numpy()
+            idx=layout.body_index(arm,name)
+            actual_p=arm.data.body_pos_w[0,idx].cpu().numpy()
+            actual_q=arm.data.body_quat_w[0,idx].cpu().numpy()
             errors.append(np.linalg.norm(poses[name][:3,3]-actual_p))
             angles.append(np.rad2deg(Rotation.from_matrix(poses[name][:3,:3].T @ Rotation.from_quat(np.roll(actual_q,-1)).as_matrix()).magnitude()))
         if max(errors)>.0005 or max(angles)>.1:
@@ -97,22 +122,37 @@ class Episode:
                     other=target.rsplit('/',1)[-1]
                     same_robot=source.rsplit('/',1)[0]==target.rsplit('/',1)[0]
                     allowed=(other=='Table' and body=='base') or (same_robot and frozenset((body,other)) in self.model.adjacent)
-                    allowed |= self.contact_allowed and other=='Cube' and body in ('gripper','jaw') and 'Left_Robot' in source
+                    allowed |= self.contact_allowed and other=='Cube' and body in ('gripper','jaw') and any(name in source for name in self.contact_arms)
                     if not allowed:
                         forbidden.append((source,target,float(magnitude)))
         if forbidden:
             self.failure_state={'phase':self.phase,'contacts':forbidden,'q_rad':self.measured_q(),
                                 'tcp_m':self.tcp(),'cube_m':self.cube.data.root_pos_w[0].cpu().numpy().copy()}
             raise RuntimeError(f'Forbidden physical contact in {self.phase}: {forbidden[:4]}')
-        v=self.contacts[0]
-        indices={str(p).rsplit('/',1)[-1]:i for i,p in enumerate(v.sensor_paths)}
-        return [float(np.linalg.norm(matrices[0][indices[n],0])) for n in ('gripper','jaw')]
+        for i,v in enumerate(self.contacts):
+            indices={str(p).rsplit('/',1)[-1]:j for j,p in enumerate(v.sensor_paths)}
+            self.pad_forces[('left','right')[i]]=[float(np.linalg.norm(matrices[i][indices[n],0])) for n in ('gripper','jaw')]
+        return self.pad_forces['left']
 
     def step(self,target,check=True):
+        target=target.copy()
+        # Orientation changes alter gravity torque at the jaw. Retain measured
+        # bilateral preload with bounded slow servo correction, not attachment.
+        for side,command in list(self.active_grips.items()):
+            force=self.pad_forces.get(side,[0.,0.])
+            if min(force)<3.:command-=np.deg2rad(.02)
+            elif min(force)>4.:command+=np.deg2rad(.01)
+            command=float(np.clip(command,np.deg2rad(15),np.deg2rad(30)))
+            self.active_grips[side]=command
+            if side=='left':target[-1]=command
+            else:self.right_target[-1]=command
+        self.left_target=target.copy()
         values=self.left.data.default_joint_pos.clone()
         values[0,self.ids]=torch.tensor(target,device=self.left.device,dtype=values.dtype)
         self.left.set_joint_position_target(values)
-        self.right.set_joint_position_target(self.right.data.default_joint_pos)
+        right_values=self.right.data.default_joint_pos.clone()
+        right_values[0,self.ids]=torch.tensor(self.right_target,device=self.right.device,dtype=right_values.dtype)
+        self.right.set_joint_position_target(right_values)
         # Feed-forward actuator torque cancels robot gravity; gravity and cube
         # physics remain enabled. This avoids centimetre-scale passive sag.
         for arm in (self.left,self.right):
@@ -132,6 +172,14 @@ class Episode:
         self.tick+=1
         forces=self.forces() if check else [0.,0.]
         cube=self.cube.data.root_pos_w[0].cpu().numpy().copy()
+        if check and self.transport_reference is not None:
+            local=self.cube_in_tcp(self.reference_robot)
+            slip=float(np.linalg.norm(local[:3,3]-self.transport_reference[:3,3]))
+            angle=float(np.rad2deg(Rotation.from_matrix(self.transport_reference[:3,:3].T@local[:3,:3]).magnitude()))
+            self.max_transport_slip_m=max(self.max_transport_slip_m,slip)
+            self.max_transport_rotation_deg=max(self.max_transport_rotation_deg,angle)
+            if slip>.005 or angle>10:
+                raise RuntimeError(f'Transport grasp slip: {slip*1000:.2f}mm / {angle:.2f}deg')
         if check and not self.contact_allowed and self.baseline is not None and np.linalg.norm(cube-self.baseline)>.002:
             raise RuntimeError(f'Cube disturbed before intended contact: {(cube-self.baseline).tolist()}')
         if self.tick%10==0:
@@ -140,13 +188,17 @@ class Episode:
             self.samples.append({'t_s':self.tick*self.dt,'phase':self.phase,'cube_m':cube,'tcp_m':self.tcp(),
                                  'cube_quat_wxyz':self.cube.data.root_quat_w[0].cpu().numpy().copy(),
                                  'q_rad':self.measured_q(),'target_q_rad':target.copy(),'pad_force_N':forces,
+                                 'right_q_rad':self.measured_q('right'),'right_pad_force_N':self.pad_forces.get('right',[0,0]),
                                  'tcp_tracking_error_mm':tracking*1000})
+        if self.checkpoint is not None and self.tick%120==0:
+            self.checkpoint()
         if not layout.args.headless:
             time.sleep(.008)
         return cube,forces
 
     def move(self,start,end,phase,contact=False,jaw_target=None):
         self.phase=phase;self.contact_allowed=contact
+        print('[PHASE]',phase,flush=True)
         duration=max(1.,np.max(np.abs(end-start))*1.875/.35)
         for t in np.linspace(0,1,math.ceil(duration/self.dt)+1):
             blend=t*t*t*(10-15*t+6*t*t)
@@ -161,8 +213,27 @@ class Episode:
             raise RuntimeError(f'Joint tracking error {np.rad2deg(error):.2f} degrees in {phase}')
         return self.check_fk()
 
+    def move_right(self,start,end,phase):
+        self.phase=phase
+        print('[PHASE]',phase,flush=True)
+        duration=max(1.,np.max(np.abs(end-start))*1.875/.35)
+        for t in np.linspace(0,1,math.ceil(duration/self.dt)+1):
+            blend=t*t*t*(10-15*t+6*t*t)
+            self.right_target=start+(end-start)*blend
+            self.step(self.left_target)
+        self.right_target=end.copy()
+        for _ in range(90):self.step(self.left_target)
+        if np.max(np.abs(self.measured_q('right')[:5]-end[:5]))>np.deg2rad(3):
+            raise RuntimeError('Right arm joint tracking error >3 degrees')
+        return self.check_fk('right')
+
     def reset(self):
         self.phase='reset';self.contact_allowed=False;self.baseline=None
+        self.transport_reference=None
+        self.reference_robot='left';self.contact_arms={'Left_Robot'}
+        self.right_target=np.zeros(6);self.left_target=np.zeros(6)
+        self.active_grips={}
+        self.max_transport_slip_m=0.;self.max_transport_rotation_deg=0.
         for arm in (self.left,self.right):
             arm.write_joint_state_to_sim(arm.data.default_joint_pos,torch.zeros_like(arm.data.default_joint_pos))
             arm.reset()
@@ -254,7 +325,175 @@ class Episode:
         if positions[:,2].min()<.06 or result['hold_relative_drift_mm']>3 or min(result['hold_min_pad_force_N'])<.05:
             raise RuntimeError(f'Lift/hold failed: {result}')
         result['pickup_success']=True;result['lift_success']=True
+        if options.stage in ('transport','handover','full'):
+            local=self.cube_in_tcp();start=self.measured_q()
+            path=options.output_dir/'handover_plan.json'
+            transport=json.loads(path.read_text()) if path.exists() else {}
+            valid=transport.get('fingerprint')==transport_fingerprint(self.model)
+            valid &= np.allclose(transport.get('start_q',np.full(6,99)),start,atol=1e-7,rtol=0)
+            if valid:
+                valid=np.allclose(transport['cube_in_left_tcp'],local,atol=1e-7,rtol=0)
+            if not valid:
+                transport=plan_transport(self.model,start,local)
+                path.write_text(json.dumps(jsonable(transport),indent=2))
+            result['transport_plan']=transport
+            if transport['selected'] is None:raise RuntimeError('No validated transport path')
+            end=np.array(transport['selected']['left_q'])
+            self.transport_reference=local
+            self.active_grips['left']=closed[-1]
+            result['transport_fk']=self.move(start,end,'transport',contact=True,jaw_target=closed[-1])
+            target=end.copy();target[-1]=closed[-1]
+            self.phase='handover_hold'
+            minimum_force=np.full(2,np.inf)
+            for _ in range(round(3/self.dt)):
+                cube,force=self.step(target)
+                minimum_force=np.minimum(minimum_force,force)
+            if cube[2]<.15 or min(minimum_force)<.05:raise RuntimeError('Transport hold lost support')
+            result['transport_success']=True
+            result['transport_max_slip_mm']=self.max_transport_slip_m*1000
+            result['transport_max_rotation_deg']=self.max_transport_rotation_deg
+            result['transport_hold_min_pad_force_N']=minimum_force
+            result['transport_cube_m']=cube
+            result['transport_q_rad']=self.measured_q()
+            result['transport_cube_in_tcp']=self.cube_in_tcp()
+            if options.stage in ('handover','full'):
+                self.handover(result,transport)
+            if options.stage=='full':self.place(result)
         return result
+
+    def handover(self,result,transport):
+        """Receive on orthogonal faces, unload left, verify right-only support."""
+        left_q=self.measured_q()
+        cube_pose=self.model.tcp_pose(left_q)@self.cube_in_tcp()
+        reference=np.array(transport['selected']['right_q'])
+        path=options.output_dir/'receiver_plan.json'
+        key=transport_fingerprint(self.model)+hashlib.sha256(inspect.getsource(plan_receiver).encode()).hexdigest()
+        receiver=json.loads(path.read_text()) if path.exists() else {}
+        valid=receiver.get('fingerprint')==key
+        valid &= np.allclose(receiver.get('left_q',np.full(6,99)),left_q,atol=1e-7,rtol=0)
+        if valid:valid=np.allclose(receiver['cube_pose'],cube_pose,atol=1e-7,rtol=0)
+        if not valid:
+            print('[PLAN] Validating receiver path around the measured held cube',flush=True)
+            receiver=plan_receiver(self.model,left_q,cube_pose,reference)
+            receiver['fingerprint']=key
+            path.write_text(json.dumps(jsonable(receiver),indent=2))
+        result['receiver_plan']=receiver
+        if receiver['selected'] is None:raise RuntimeError('Receiver path rejected; see receiver_plan.json')
+        waypoints=[np.array(q) for q in receiver['selected']['waypoints']]
+        phases=['right_open','right_pregrasp']+[f'right_approach_{i}' for i in range(len(waypoints)-3)]
+        for i,phase in enumerate(phases):
+            result[phase+'_fk']=self.move_right(waypoints[i],waypoints[i+1],phase)
+        self.contact_arms.add('Right_Robot')
+        self.phase='right_close'
+        stable=0
+        for _ in range(500):
+            self.step(self.left_target)
+            force=self.pad_forces['right']
+            # During dual support a strong receiving squeeze bends both
+            # compliant arms. Establish light bilateral contact first; increase
+            # right preload only as the donor releases.
+            if min(force)>1.:
+                stable+=1
+                if stable>=30:break
+            else:
+                stable=0
+                self.right_target[-1]=max(np.deg2rad(15),self.right_target[-1]-np.deg2rad(.12))
+        for _ in range(60):self.step(self.left_target)
+        result['right_acquisition_force_N']=self.pad_forces['right'].copy()
+        if min(self.pad_forces['right'])<.6:raise RuntimeError('Right grasp has insufficient bilateral preload')
+        left_q=self.measured_q();right_q=self.measured_q('right')
+        release=left_q.copy();release[-1]=np.pi/4
+        right_base=self.model.base.copy();right_base[0,3]=.25
+        cube_pose=self.model.tcp_pose(left_q)@self.cube_in_tcp()
+        world=CollisionWorld(self.model,cube_pose[:3,3],other_q=right_q,other_base=right_base,cube_rotation=cube_pose[:3,:3])
+        release_check=world.segment(left_q,release,margin=.001,cube_contact=True)
+        result['left_release_check']=release_check
+        if not release_check['safe']:raise RuntimeError('Left release would collide with receiving hand')
+        self.reference_robot='right';self.transport_reference=self.cube_in_tcp('right')
+        self.active_grips.pop('left',None)
+        self.active_grips['right']=self.right_target[-1]
+        self.max_transport_slip_m=0.;self.max_transport_rotation_deg=0.
+        self.move(left_q,release,'left_release',contact=True)
+        self.phase='right_only_hold'
+        minimum_right=np.full(2,np.inf);maximum_left=np.zeros(2);heights=[]
+        for _ in range(round(3/self.dt)):
+            cube,_=self.step(self.left_target)
+            minimum_right=np.minimum(minimum_right,self.pad_forces['right'])
+            maximum_left=np.maximum(maximum_left,self.pad_forces['left'])
+            heights.append(cube[2])
+        result['right_only_min_force_N']=minimum_right
+        result['released_left_max_force_N']=maximum_left
+        result['right_only_min_height_m']=min(heights)
+        if min(minimum_right)<.05 or max(maximum_left)>.05 or min(heights)<.15:
+            raise RuntimeError('Right-only support not established after left release')
+        result['handover_success']=True
+        result['handover_cube_in_right_tcp']=self.cube_in_tcp('right')
+        result['handover_right_q_rad']=self.measured_q('right')
+        result['handover_left_q_rad']=self.measured_q()
+        result['handover_cube_m']=self.cube.data.root_pos_w[0].cpu().numpy().copy()
+
+    def place(self,result):
+        """Release over the bin, retreat, and measure sustained resting support."""
+        left_q=self.measured_q();right_q=self.measured_q('right');local=self.cube_in_tcp('right')
+        path=options.output_dir/'placement_plan.json'
+        key=transport_fingerprint(self.model)+hashlib.sha256(inspect.getsource(plan_placement).encode()).hexdigest()
+        placement=json.loads(path.read_text()) if path.exists() else {}
+        valid=placement.get('fingerprint')==key
+        for name,value in (('left_start',left_q),('right_start',right_q),('cube_in_right_tcp',local)):
+            if valid:valid=np.allclose(placement[name],value,atol=1e-7,rtol=0)
+        if not valid:
+            print('[PLAN] Validating donor withdrawal and loaded bin travel',flush=True)
+            placement=plan_placement(self.model,left_q,right_q,local)
+            placement['fingerprint']=key
+            path.write_text(json.dumps(jsonable(placement),indent=2))
+        result['placement_plan']=placement
+        selected=placement['selected']
+        if selected is None:raise RuntimeError('No validated withdrawal/bin path; see placement_plan.json')
+        self.contact_arms.discard('Left_Robot')
+        waypoints=[np.array(q) for q in selected['left_departure']['waypoints']]
+        for i in range(len(waypoints)-1):
+            self.move(waypoints[i],waypoints[i+1],f'left_retreat_{i}',contact=True)
+        self.move_right(self.measured_q('right'),np.array(selected['right_goal']),'right_to_bin')
+        right_model=copy.copy(self.model);right_model.base=self.model.base.copy();right_model.base[0,3]=.25
+        cube_pose=right_model.tcp_pose(self.measured_q('right'))@self.cube_in_tcp('right')
+        vertices=apply(cube_pose,box_mesh(np.zeros(3),np.full(3,.04),'cube').vertices)
+        if np.any(vertices[:,:2].min(0)<[.275,-.105]) or np.any(vertices[:,:2].max(0)>[.405,.025]):
+            raise RuntimeError('Measured payload is not inside the bin release footprint')
+        if min(self.pad_forces['right'])<.05:raise RuntimeError('Right grasp lost before bin release')
+        opened=self.measured_q('right');opened[-1]=np.pi/4
+        world=CollisionWorld(right_model,cube=(99,99,99),other_q=self.measured_q(),other_base=self.model.base)
+        check=world.segment(self.measured_q('right'),opened,margin=.001)
+        result['bin_opening_check']=check
+        if not check['safe']:raise RuntimeError('Measured bin opening path rejected')
+        result['release_cube_m']=cube_pose[:3,3]
+        self.active_grips.pop('right',None);self.transport_reference=None
+        self.move_right(self.measured_q('right'),opened,'bin_release')
+        cube_pose=right_model.tcp_pose(self.measured_q('right'))@self.cube_in_tcp('right')
+        world=CollisionWorld(right_model,cube_pose[:3,3],other_q=self.measured_q(),
+                             other_base=self.model.base,cube_rotation=cube_pose[:3,:3])
+        home=np.zeros(6);home[-1]=np.pi/4
+        check=world.segment(self.measured_q('right'),home,margin=.001)
+        result['right_retreat_check']=check
+        if not check['safe']:raise RuntimeError('Post-release retreat rejected')
+        self.contact_arms.clear()
+        self.move_right(self.measured_q('right'),home,'right_retreat')
+        self.phase='bin_settle';metrics=[]
+        for _ in range(round(3/self.dt)):
+            self.step(self.left_target)
+            state=self.cube.data.root_state_w[0].cpu().numpy()
+            pose=transform(state[:3],Rotation.from_quat(np.roll(state[3:7],-1)).as_matrix())
+            verts=apply(pose,box_mesh(np.zeros(3),np.full(3,.04),'cube').vertices)
+            support=float(self.bin_contact.get_contact_force_matrix(self.dt)[0,0,2].item())
+            inside=bool(np.all(verts.min(0)>=[.27,-.11,.009]) and np.all(verts.max(0)<=[.41,.03,.085]))
+            metrics.append({'inside':inside,'floor_support_N':support,'linear_speed_m_s':float(np.linalg.norm(state[7:10])),
+                            'angular_speed_rad_s':float(np.linalg.norm(state[10:13]))})
+        result['bin_settle_metrics']=metrics
+        result['placement_cube_m']=self.cube.data.root_pos_w[0].cpu().numpy().copy()
+        if not all(m['inside'] and .3<m['floor_support_N']<.7 and m['linear_speed_m_s']<.01
+                   and m['angular_speed_rad_s']<.1 for m in metrics):
+            raise RuntimeError('Released cube did not remain settled inside bin on its floor')
+        result['placement_success']=True
+        result['full_task_success']=all(result[k] for k in ('pickup_success','lift_success','handover_success','placement_success'))
 
 
 def main():
@@ -268,7 +507,11 @@ def main():
         plan=plan_pickup(model)
         plan['fingerprint']=fingerprint(model)
         plan_path.write_text(json.dumps(jsonable(plan),indent=2))
-    report={'calibration':calibration,'plan':plan,'episodes':[],'status':'in_progress'}
+    run_id=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    report={'stage':options.stage,'run_id':run_id,'headless':layout.args.headless,
+            'source_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                             for name in ('run_manipulation.py','so101_model.py','so101_planning.py')},
+            'calibration':calibration,'plan':plan,'episodes':[],'status':'in_progress'}
     path=options.output_dir/'simulation.json'
     def save():path.write_text(json.dumps(jsonable(report),indent=2))
     save()
@@ -284,8 +527,14 @@ def main():
         getattr(cfg,name).spawn.rigid_props=layout.sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True,disable_gravity=True)
     scene=layout.InteractiveScene(cfg)
     sim.reset()
-    sim.set_camera_view(eye=(-.8,-.6,.55),target=(-.30,-.05,.10))
+    sim.set_camera_view(eye=(.8,.9,.7),target=(0,-.12,.10))
     episode=Episode(sim,scene,model)
+    def checkpoint():
+        report['active_phase']=episode.phase
+        report['active_episode']=getattr(episode,'result',{})
+        report['last_episode_samples']=episode.samples
+        save()
+    episode.checkpoint=checkpoint
     try:
         for i in range(options.episodes):
             episode.samples=[]
@@ -296,24 +545,32 @@ def main():
             report['episodes'].append(result)
             report['last_episode_samples']=episode.samples
             save()
-            print(f'[EPISODE {i+1}] '+json.dumps(jsonable({k:v for k,v in result.items() if k!='lift_plan'})),flush=True)
+            print(f'[EPISODE {i+1}] '+json.dumps(jsonable({k:v for k,v in result.items() if not k.endswith('_plan')})),flush=True)
         report['status']='passed_requested_stage'
     except Exception as exc:
         report['status']='failed';report['failure']=str(exc)
         report['failure_state']=episode.failure_state
         report['failed_episode']=getattr(episode,'result',{})
-        report['last_episode_samples']=episode.samples
+        report['last_episode_samples']=list(episode.samples)
         try:
+            episode.checkpoint=None
             report['failure_reset']=episode.reset()
         except Exception as reset_exc:
             report['failure_reset_error']=str(reset_exc)
         raise
     finally:
         report['success_counts']={key:sum(bool(e.get(key)) for e in report['episodes'])
-                                  for key in ('approach_success','pickup_success','lift_success','handover_success','placement_success','full_task_success')}
+                                  for key in ('approach_success','pickup_success','lift_success','transport_success','handover_success','placement_success','full_task_success')}
         report['completed_episodes']=len(report['episodes'])
         save()
+        (options.output_dir/f'{options.stage}_{run_id}.json').write_text(json.dumps(jsonable(report),indent=2))
     print('[RESULT]',report['status'],flush=True)
+    if not layout.args.headless and not options.exit_after:
+        print('[VIEWER] Evaluation saved. Final state frozen for inspection; close the window to exit.',flush=True)
+        sim.clear_all_callbacks()
+        while layout.app.is_running():
+            sim.render()
+            time.sleep(.02)
 
 
 if __name__=='__main__':
