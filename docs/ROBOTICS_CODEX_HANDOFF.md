@@ -1,5 +1,12 @@
 # Project handoff — Simulation-first bimanual SO-101
-Updated 2026-10-21. This is a snapshot from ChatGPT; **not automatically synchronized with Codex**. Verify all local files and current Git state before acting.
+Updated 2026-10-22. Verify local files and current Git state before acting.
+
+**Latest maintained state:** branch `feat/fingertip-geometry-calibration`;
+geometry/TCP, approach, pickup, transport, handover and basket placement/retreat
+have passed measured simulator gates in **3/3 complete episodes**, including
+automatic reset. Final GUI regression is in progress. The dated execution
+updates below supersede the original snapshot's missing bounds/unverified TCP
+and early Git-state descriptions. Use README commands and current reports.
 
 ## Purpose and portfolio goal
 Build a defensible robotics/embodied-AI portfolio demonstrating simulation, forward/inverse kinematics, manipulation, physics, collision-aware planning, control, evaluation, imitation learning and eventual sim-to-real. Target roles in robotics software, embodied AI, machine learning/RL and automation. Produce a strong **first LinkedIn post** when there is an actual reliably functioning, filmed and objectively measured deterministic milestone (preferably complete bimanual handover; smaller pickup milestone only if meaningful). Do not advertise unverified capability, fabricated benchmark numbers, or imply trained AI when using deterministic control. Later create a clean GitHub README, architecture figure, demo video and measured success rate; keep repository private until user explicitly approves publication. Explain engineering tradeoffs and why Isaac Lab was selected; MoveIt 2/ROS 2 integration is a later optional comparison, not a reason to restart.
@@ -297,3 +304,97 @@ right-arm retreat and three seconds of measured cube containment, floor support
 implemented acceptance conditions, not a passed result yet. Active phase and
 partial traces checkpoint every 120 physics ticks. Failure traces are copied
 before reset so recovery motion cannot overwrite the evidence.
+
+Light receiving preload subsequently cleared the physical handover gate: right
+acquisition forces 1.0495 / 2.4685 N; the right-only hold trace showed zero left
+pad forces, approximately 4.445 / 3.976 N right forces and 173.407 mm cube height.
+The full trial then stopped in offline donor withdrawal planning: after a
+40 mm retreat, direct HOME travel intersected the cube with the jaw at sample
+443/3535. A longer 60 mm retreat instead reached shoulder/lower-arm self overlap.
+No rejected path was executed. The correction inserts a pan turn away from the
+cube before straightening the arm, and limits retreat candidates to 40–50 mm.
+
+That failure also exposed a logging defect: NumPy `float32` hold height was not
+JSON serializable, so the final `full_first` report could not be written; the
+log and `placement_plan.json` survived. The scalar is now explicitly converted,
+handover checkpoints precede placement planning, and the active trial is
+`full_departure.log`. Do not count the interrupted final report as full success.
+The new run additionally monitors carried-cube/table/bin forces at every tick;
+>=0.05 N environment contact during loaded transport fails. Bin floor support
+still supplies the independent final placement prerequisite.
+
+### Complete basket placement and planning performance — 2026-10-22
+
+First full-task pass: `full_20261022T084021118058Z.json`, exit 0, every stage
+1/1, 209.1833 simulated seconds. Cube final centre
+`(0.346718967,-0.032673143,0.029999895)` m; full containment and floor support
+held for three seconds after both arms retreated. Minimum support 0.49049899 N;
+maximum linear/angular speeds 0.00047460 m/s / 0.0109784 rad/s. Maximum carried
+cube/environment force 0 N; peak measured joint speed 2.15124 rad/s and actuator
+torque 1.51440 N m, within existing 10/10 limits. Right-only hold minimum forces
+4.44493/3.97580 N; left forces exactly zero. This is a release above the basket
+at about 106 mm centre height, followed by settling at 30 mm, not controlled
+lowering into floor contact. Gravity and physical contacts perform the release.
+
+Withdrawal fix: the old axial retreat brushed the fixed finger against the cube
+at 0.050372 N in `left_retreat_4`. The donor now separates by a -2 degree pan
+change before its 40 mm Cartesian retreat, turns away and returns HOME. The
+first separation permits nominal contact-surface proximity, but runtime donor
+contact remains forbidden throughout withdrawal; later legs require geometric
+cube clearance too. The contact limit was not increased. The user's GUI
+`pickup` report passed; its later withdrawal failure was recorded under `full`.
+Startup now prints requested stage/episode count to make this distinction clear.
+
+Performance: vectorized mesh bounds preserve exact collision decisions on a
+1,080-check comparison corpus: scalar 76.550 s, vectorized 30.062 s (2.55x).
+Approach planning independently decreased from ~205 s to 32.227 s with the same
+3,794 samples. Separate closure/release/retreat caches bind geometry, endpoints,
+cube and opposite-arm transforms plus margin/contact options. Fresh right
+retreat validation measured 60.22 s / 2,661 samples. Cache-hit timing is printed;
+fresh planner duration is printed by `[PLAN DONE]`. GUI rendering continues
+without stepping physics during CPU planning.
+
+The first repeated run passed episode one, then stopped before moving in episode
+two because HiGHS returned unknown model status (primal infeasible) during a
+near-tangent convex-envelope query. Reset succeeded. Added one dual-simplex
+retry with presolve disabled; only definite statuses 0/2 are accepted, and a
+second ambiguous result still raises. The saved failing measured state now
+passes a complete offline placement plan (`lp_retry_reproduction.json`); the
+transient unknown status did not recur in that standalone replay. Focused tests
+force an ambiguous first result and exercise real definite overlap/separation
+retries, plus rejection when both attempts remain ambiguous.
+
+Measured reset variation was only 6.56e-7 rad in donor joints and 1.64e-6 in the
+held transform, yet the old 1e-7 cache threshold forced expensive replanning.
+Cache matching now uses 1e-5 per state element; the 0.6 m radius bound limits the
+combined geometric variation below 0.1 mm, within the remaining allowance of
+the >=1 mm planning margin. Actual contact/slip gates are unchanged. A direct
+cache regression reuses 1 micrometre cube jitter but invalidates a 6 mm shift
+into a finger and rejects it. Code/assets still invalidate all related plans.
+
+Final headless validation: `full_final_repeated.log`, report
+`full_20261022T085453054801Z.json`, exit 0. All seven stage success counts **3/3**
+(approach, pickup, lift, transport, handover, placement, full task). Each episode
+lasted 209.1833 simulated seconds. Minimum bin support across trials 0.49049899 N;
+maximum linear/angular settling speeds 0.00047469 m/s / 0.01097843 rad/s. Maximum
+carried environment contact 0 N; speed/torque maxima <=2.15124 rad/s / 1.51441 N m.
+Final centres differed by less than 0.006 mm between trials. Episode two reused
+all approach/transport/receiver/placement and three segment caches, recomputing
+right retreat once (59.65 s) because the settled pose changed beyond tolerance.
+Episode three reused **every** plan, including right retreat: no fresh collision
+solve. First cold validation timings (seconds): approach 42.89, lift 1.06,
+transport 43.64, receiver 150.01, donor release 23.11, placement 126.77, right
+retreat 60.21. Cold computation is intentionally retained when inputs change;
+warm repeat computation is skipped only with matching certified context.
+
+Seven model/geometry tests plus three original finger tests passed (10 total).
+GUI regression is running with `python scripts/run_manipulation.py --stage full
+--episodes 1` (no `--headless`), log `full_gui_final.log`; its final scene will stay
+open for human inspection. Physical visual review is not yet confirmed.
+Stack source commits independently rechecked: Isaac Lab
+`3c6e67bb5c7ada942a6d1884ab69338f57596f77`, LeIsaac `24d3bcd`; Python 3.11.16.
+No dependency, driver, physics asset, friction, gravity or actuator-gain changes.
+README now explains FK, five-DOF bounded TRF IK, coupled handover solving,
+collision sampling/LP, quintic trajectory formulas, force control, stage commands
+and cache behavior. Keep generated reports local/ignored; publish source/docs
+only to the authorized feature branch.

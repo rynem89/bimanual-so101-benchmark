@@ -40,6 +40,8 @@ class CollisionWorld:
             other_base = model.base.copy()
             other_base[0,3] = .25 if model.base[0,3]<0 else -.25
         self.right = model.world_meshes(np.zeros(6) if other_q is None else other_q,other_base)
+        self.right_bounds=np.array([(v.min(0),v.max(0)) for _,v,_ in self.right])
+        self.bin_bounds=np.array([(m.vertices.min(0),m.vertices.max(0)) for m in self.bin])
 
     def check(self, q, margin=.002, cube_contact=False):
         model = self.model
@@ -47,29 +49,35 @@ class CollisionWorld:
             return ['joint_limit']
         meshes = model.world_meshes(q)
         faults = []
-        def overlap(a, b):
-            return np.all(a.min(0) <= b.max(0)+margin) and np.all(b.min(0) <= a.max(0)+margin)
-        for mesh, verts, pose in meshes:
+        bounds=np.array([(v.min(0),v.max(0)) for _,v,_ in meshes])
+        def overlaps(other):
+            # Same inclusive AABB rejection as the scalar checker, calculated
+            # once per mesh instead of recomputing bounds for every pair.
+            return (np.all(bounds[:,None,0]<=other[None,:,1]+margin,axis=-1)
+                    & np.all(other[None,:,0]<=bounds[:,None,1]+margin,axis=-1))
+        for i,(mesh, verts, pose) in enumerate(meshes):
             # Base/table contact is the documented fixed mounting interface.
-            if mesh.link != 'base' and verts[:,2].min() < margin:
+            if mesh.link != 'base' and bounds[i,0,2] < margin:
                 faults.append(f'table:{mesh.link}')
-            for obstacle in self.bin:
-                if overlap(verts,obstacle.vertices) and intersect_hulls(mesh,pose,obstacle,np.eye(4),margin):
-                    faults.append(f'{obstacle.link}:{mesh.link}')
-            for right,rverts,rpose in self.right:
-                if overlap(verts,rverts) and intersect_hulls(mesh,pose,right,rpose,margin):
-                    faults.append(f'opposite:{mesh.link}/{right.link}')
             if not (cube_contact and mesh.link in ('gripper','jaw')):
-                if np.all(verts.min(0) <= self.cube_vertices.max(0)+margin) and np.all(verts.max(0) >= self.cube_vertices.min(0)-margin):
+                if np.all(bounds[i,0] <= self.cube_vertices.max(0)+margin) and np.all(bounds[i,1] >= self.cube_vertices.min(0)-margin):
                     triangles = (apply(pose,mesh.triangles)-self.cube) @ self.cube_rotation
                     if mesh_box_overlap(triangles,np.zeros(3),np.full(3,.02+margin)):
                         faults.append(f'cube:{mesh.link}')
-        for i,(a,av,at) in enumerate(meshes):
-            for b,bv,bt in meshes[i+1:]:
-                if a.link == b.link or frozenset((a.link,b.link)) in model.adjacent:
-                    continue  # USD joints disable contact on these mechanical interfaces.
-                if overlap(av,bv) and intersect_hulls(a,at,b,bt,margin):
-                    faults.append(f'self:{a.link}/{b.link}')
+        for i,j in np.argwhere(overlaps(self.bin_bounds)):
+            mesh,_,pose=meshes[i];obstacle=self.bin[j]
+            if intersect_hulls(mesh,pose,obstacle,np.eye(4),margin):
+                faults.append(f'{obstacle.link}:{mesh.link}')
+        for i,j in np.argwhere(overlaps(self.right_bounds)):
+            mesh,_,pose=meshes[i];right,_,rpose=self.right[j]
+            if intersect_hulls(mesh,pose,right,rpose,margin):
+                faults.append(f'opposite:{mesh.link}/{right.link}')
+        for i,j in np.argwhere(np.triu(overlaps(bounds),1)):
+            a,_,at=meshes[i];b,_,bt=meshes[j]
+            if a.link == b.link or frozenset((a.link,b.link)) in model.adjacent:
+                continue  # USD joints disable contact on these mechanical interfaces.
+            if intersect_hulls(a,at,b,bt,margin):
+                faults.append(f'self:{a.link}/{b.link}')
         return sorted(set(faults))
 
     def segment(self, start, end, margin=.002, cube_contact=False):
@@ -325,24 +333,35 @@ def plan_placement(model, left_q, right_q, cube_in_right_tcp):
     result={'selected':None,'rejections':[],'left_start':left_q,'right_start':right_q,
             'cube_in_right_tcp':cube_in_right_tcp}
     departure=None
-    pose=model.tcp_pose(left_q)
-    for distance in (.04,.06):
-        retreat=[left_q];checks=[]
+    for pan_clearance in (-2.,-4.,2.,4.):
+        separated=left_q.copy();separated[0]+=np.deg2rad(pan_clearance)
+        if world.check(separated,margin=.001):continue
+        separation=world.segment(left_q,separated,margin=.001,cube_contact=True)
+        if not separation['safe']:
+            result['rejections'].append(separation);continue
+        pose=model.tcp_pose(separated)
+        distance=.04
+        retreat=[left_q,separated];checks=[separation]
         for offset in np.linspace(0,distance,17)[1:]:
             solutions=model.ik(pose[:3,3]+pose[:3,2]*offset,rotation=pose[:3,:3],
                                reference=retreat[-1],seeds=0)
             if not solutions:break
             clear=solutions[0]['q']
-            check=world.segment(retreat[-1],clear,margin=.001,cube_contact=True)
+            check=world.segment(retreat[-1],clear,margin=.001)
             checks.append(check)
             if not check['safe']:break
             retreat.append(clear)
-        if len(retreat)!=17 or world.check(retreat[-1],margin=.001):
+        if len(retreat)!=18 or world.check(retreat[-1],margin=.001):
             result['rejections'].append({'departure':checks});continue
-        second=world.segment(retreat[-1],home,margin=.001)
-        if second['safe']:
-            departure={'waypoints':[*retreat,home],'checks':[*checks,second]};break
-        result['rejections'].append(second)
+        # Turning away first avoids the jaw sweeping back through the held
+        # cube when elbow and shoulder are straightened simultaneously.
+        turned=retreat[-1].copy();turned[0]=0.
+        second=world.segment(retreat[-1],turned,margin=.001)
+        if not second['safe']:result['rejections'].append(second);continue
+        third=world.segment(turned,home,margin=.001)
+        if third['safe']:
+            departure={'waypoints':[*retreat,turned,home],'checks':[*checks,second,third]};break
+        result['rejections'].append(third)
     if departure is None:return result
     for height in (.11,.105,.10):
         for heading in (19.,18.5,19.5):

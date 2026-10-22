@@ -186,6 +186,14 @@ def intersect_hulls(a, ta, b, tb, margin=0.001):
     result = linprog(np.zeros(3), A_ub=np.vstack(matrices), b_ub=np.concatenate(offsets),
                      bounds=[(None, None)]*3, method='highs')
     if result.status not in (0, 2):
+        # HiGHS presolve can return an unknown status on almost tangent small
+        # hulls. Retry dual simplex without presolve; accept only a definite
+        # feasibility/infeasibility result, never the ambiguous primal status.
+        first_message=result.message
+        result=linprog(np.zeros(3),A_ub=np.vstack(matrices),b_ub=np.concatenate(offsets),
+                       bounds=[(None,None)]*3,method='highs-ds',options={'presolve':False})
+        print(f'[COLLISION RETRY] {a.link}/{b.link}: {first_message} -> {result.message}',flush=True)
+    if result.status not in (0, 2):
         raise RuntimeError(f'Collision LP unresolved: {result.message}')
     return result.status == 0
 

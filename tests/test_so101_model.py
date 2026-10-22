@@ -4,10 +4,35 @@ import sys
 import unittest
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from so101_model import SO101Model,calibrate,box_mesh,mesh_box_overlap,triangle_box_overlap
+from so101_model import SO101Model,calibrate,box_mesh,mesh_box_overlap,triangle_box_overlap,intersect_hulls,transform
 
 
 class GeometryTests(unittest.TestCase):
+    def test_ambiguous_lp_requires_definitive_retry(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import so101_model
+        original=so101_model.linprog
+        unknown=SimpleNamespace(status=4,message='indeterminate numerical status')
+        box=box_mesh(np.zeros(3),np.ones(3),'test')
+        def presolve_unknown(*args,**kwargs):
+            return unknown if kwargs['method']=='highs' else original(*args,**kwargs)
+        with patch.object(so101_model,'linprog',side_effect=presolve_unknown):
+            self.assertFalse(intersect_hulls(box,np.eye(4),box,transform([2,0,0],np.eye(3))))
+            self.assertTrue(intersect_hulls(box,np.eye(4),box,np.eye(4)))
+        with patch.object(so101_model,'linprog',return_value=unknown):
+            with self.assertRaisesRegex(RuntimeError,'Collision LP unresolved'):
+                intersect_hulls(box,np.eye(4),box,np.eye(4))
+
+    def test_convex_envelopes_with_rotated_box(self):
+        from scipy.spatial.transform import Rotation
+        box=box_mesh(np.zeros(3),np.ones(3),'test')
+        rotation=Rotation.from_euler('z',45,degrees=True).as_matrix()
+        # Analytic X support: 0.5 + sqrt(0.5) = 1.207106... metres.
+        self.assertTrue(intersect_hulls(box,np.eye(4),box,transform([1.20,0,0],rotation)))
+        self.assertFalse(intersect_hulls(box,np.eye(4),box,transform([1.22,0,0],rotation)))
+        self.assertTrue(intersect_hulls(box,np.eye(4),box,np.eye(4)))
+
     def test_box_containment_and_separation(self):
         mesh=box_mesh(np.zeros(3),np.ones(3),'test')
         self.assertFalse(triangle_box_overlap(mesh.triangles,np.zeros(3),np.ones(3)*.1))

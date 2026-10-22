@@ -16,6 +16,7 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--stage', choices=('model','approach','pickup','transport','handover','full'), default='approach')
@@ -32,12 +33,43 @@ import omni.physics.tensors as tensors
 from so101_model import SO101Model, calibrate, jsonable, transform, apply, box_mesh, JOINT_NAMES, LINK_NAMES
 from so101_planning import plan_pickup, plan_lift, plan_transport, plan_receiver, plan_placement, transport_fingerprint, CollisionWorld, fingerprint
 
+# Joint radians / transform metres or matrix entries. The 0.6 m radius bound
+# gives <0.1 mm combined geometric change, below the >=1 mm planning margins.
+CACHE_STATE_ATOL=1e-5
+
+
+def compute_plan(function,*args,**kwargs):
+    """Keep the GUI responsive while CPU-only geometry planning runs.
+
+    Rendering does not step physics, so measured held poses stay fixed while
+    planning. The worker touches only the already-loaded NumPy robot model.
+    """
+    started=time.perf_counter()
+    name=function.__qualname__
+    print(f'[PLAN] {name}: computing CPU checks; physics paused.',flush=True)
+    if layout.args.headless:
+        result=function(*args,**kwargs)
+        print(f'[PLAN DONE] {name}: {time.perf_counter()-started:.2f}s',flush=True)
+        return result
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        future=worker.submit(function,*args,**kwargs)
+        while not future.done():
+            sim=layout.SimulationContext.instance()
+            if sim is None:layout.app.update()
+            else:sim.render()
+            time.sleep(.02)
+        result=future.result()
+    print(f'[PLAN DONE] {name}: {time.perf_counter()-started:.2f}s',flush=True)
+    return result
+
 
 class Episode:
     def __init__(self,sim,scene,model):
         self.sim,self.scene,self.model=sim,scene,model
         self.left,self.right,self.cube=scene['left_arm'],scene['right_arm'],scene['cube']
         self.ids=[layout.joint_index(self.left,n) for n in JOINT_NAMES]
+        if self.ids!=[layout.joint_index(self.right,n) for n in JOINT_NAMES]:
+            raise RuntimeError('Left/right joint ordering differs; explicit remapping required')
         self.dt=sim.get_physics_dt()
         self.root='/World/envs/env_0/'
         self.filters=[self.root+n for n in ('Cube','Table','BinFloor','BinLeftWall','BinRightWall','BinFrontWall','BinBackWall')]
@@ -47,8 +79,9 @@ class Episode:
         self.contacts=[self.physics.create_rigid_contact_view([self.root+arm+'/'+n for n in LINK_NAMES],filter_patterns=[self.filters]*len(LINK_NAMES),
                                                             max_contact_data_count=4096)
                        for arm in ('Left_Robot','Right_Robot')]
-        self.cube_contact=self.physics.create_rigid_contact_view(self.root+'Cube',filter_patterns=[self.root+'Table'])
-        self.bin_contact=self.physics.create_rigid_contact_view(self.root+'Cube',filter_patterns=[self.root+'BinFloor'])
+        self.cube_contact=self.physics.create_rigid_contact_view(self.root+'Cube',filter_patterns=self.filters[1:7])
+        if self.cube_contact.sensor_count!=1 or self.cube_contact.filter_count!=6:
+            raise RuntimeError('Cube/environment force sensor prerequisites failed')
         for v in self.contacts:
             if v.sensor_count!=7 or v.filter_count!=len(self.filters):
                 raise RuntimeError(f'Contact prerequisites: sensors={v.sensor_count}, filters={v.filter_count}')
@@ -72,10 +105,34 @@ class Episode:
         self.pad_forces={}
         self.active_grips={}
         self.checkpoint=None
+        self.max_carried_environment_force_N=0.
 
     def measured_q(self,side='left'):
         arm=self.left if side=='left' else self.right
         return arm.data.joint_pos[0,self.ids].detach().cpu().numpy().copy()
+
+    def validate_segment(self,name,world,start,end,**parameters):
+        """Reuse a checked segment only for matching geometry and measured state.
+
+        Context includes both bases/arms, cube position/orientation, joint
+        endpoints and contact/margin options. The state tolerance is far below
+        the millimetre clearance margins; no endpoint-only checks are reused.
+        """
+        context=np.concatenate([world.model.base.ravel(),np.asarray(start),np.asarray(end),
+                                world.cube.ravel(),world.cube_rotation.ravel(),
+                                *[pose.ravel() for _,_,pose in world.right]])
+        key=fingerprint(world.model)+json.dumps(parameters,sort_keys=True)
+        directory=options.output_dir/'segments';directory.mkdir(exist_ok=True)
+        path=directory/f'{name}.json'
+        saved=json.loads(path.read_text()) if path.exists() else {}
+        valid=saved.get('fingerprint')==key
+        if valid:valid=np.allclose(saved['context'],context,atol=CACHE_STATE_ATOL,rtol=0)
+        if valid:
+            print(f'[CACHE] {name}: validated segment reused',flush=True)
+            return dict(saved['check'],cache_hit=True)
+        check=compute_plan(world.segment,start,end,**parameters)
+        path.write_text(json.dumps(jsonable({'fingerprint':key,'context':context,'check':check}),indent=2))
+        return dict(check,cache_hit=False)
 
     def tcp(self):
         idx=layout.body_index(self.left,'gripper')
@@ -129,6 +186,12 @@ class Episode:
             self.failure_state={'phase':self.phase,'contacts':forbidden,'q_rad':self.measured_q(),
                                 'tcp_m':self.tcp(),'cube_m':self.cube.data.root_pos_w[0].cpu().numpy().copy()}
             raise RuntimeError(f'Forbidden physical contact in {self.phase}: {forbidden[:4]}')
+        if self.transport_reference is not None:
+            environment=self.cube_contact.get_contact_force_matrix(self.dt)[0].cpu().numpy()
+            maximum=float(np.linalg.norm(environment,axis=-1).max())
+            self.max_carried_environment_force_N=max(self.max_carried_environment_force_N,maximum)
+            if maximum>=.05:
+                raise RuntimeError(f'Carried cube/environment contact in {self.phase}: {maximum:.3f}N')
         for i,v in enumerate(self.contacts):
             indices={str(p).rsplit('/',1)[-1]:j for j,p in enumerate(v.sensor_paths)}
             self.pad_forces[('left','right')[i]]=[float(np.linalg.norm(matrices[i][indices[n],0])) for n in ('gripper','jaw')]
@@ -233,6 +296,7 @@ class Episode:
         self.reference_robot='left';self.contact_arms={'Left_Robot'}
         self.right_target=np.zeros(6);self.left_target=np.zeros(6)
         self.active_grips={}
+        self.max_carried_environment_force_N=0.
         self.max_transport_slip_m=0.;self.max_transport_rotation_deg=0.
         for arm in (self.left,self.right):
             arm.write_joint_state_to_sim(arm.data.default_joint_pos,torch.zeros_like(arm.data.default_joint_pos))
@@ -270,7 +334,7 @@ class Episode:
         if options.stage=='approach':return result
         closed=waypoints[-1].copy()
         closure_end=closed.copy();closure_end[-1]=np.deg2rad(-5)
-        closure_check=CollisionWorld(self.model).segment(closed,closure_end,cube_contact=True)
+        closure_check=self.validate_segment('left_closure',CollisionWorld(self.model),closed,closure_end,cube_contact=True)
         if not closure_check['safe']:raise RuntimeError(f'Unsafe closure: {closure_check}')
         result['closure_path']=closure_check
         # Stop closing once both pads load the cube; do not drive the servo to
@@ -295,8 +359,8 @@ class Episode:
         lift_key=fingerprint(self.model)+hashlib.sha256(inspect.getsource(plan_lift).encode()).hexdigest()
         lift_path=options.output_dir/'lift_plan.json'
         lift=json.loads(lift_path.read_text()) if lift_path.exists() else {}
-        if lift.get('source_fingerprint')!=lift_key or not np.allclose(lift.get('start_q',np.full(6,99)),measured,atol=1e-7,rtol=0):
-            lift=plan_lift(self.model,measured,held=True)
+        if lift.get('source_fingerprint')!=lift_key or not np.allclose(lift.get('start_q',np.full(6,99)),measured,atol=CACHE_STATE_ATOL,rtol=0):
+            lift=compute_plan(plan_lift,self.model,measured,held=True)
             lift['source_fingerprint']=lift_key;lift['start_q']=measured
             lift_path.write_text(json.dumps(jsonable(lift),indent=2))
         result['lift_plan']=lift
@@ -330,11 +394,11 @@ class Episode:
             path=options.output_dir/'handover_plan.json'
             transport=json.loads(path.read_text()) if path.exists() else {}
             valid=transport.get('fingerprint')==transport_fingerprint(self.model)
-            valid &= np.allclose(transport.get('start_q',np.full(6,99)),start,atol=1e-7,rtol=0)
+            valid &= np.allclose(transport.get('start_q',np.full(6,99)),start,atol=CACHE_STATE_ATOL,rtol=0)
             if valid:
-                valid=np.allclose(transport['cube_in_left_tcp'],local,atol=1e-7,rtol=0)
+                valid=np.allclose(transport['cube_in_left_tcp'],local,atol=CACHE_STATE_ATOL,rtol=0)
             if not valid:
-                transport=plan_transport(self.model,start,local)
+                transport=compute_plan(plan_transport,self.model,start,local)
                 path.write_text(json.dumps(jsonable(transport),indent=2))
             result['transport_plan']=transport
             if transport['selected'] is None:raise RuntimeError('No validated transport path')
@@ -359,6 +423,9 @@ class Episode:
             if options.stage in ('handover','full'):
                 self.handover(result,transport)
             if options.stage=='full':self.place(result)
+        result['max_joint_speed_rad_s']=self.max_speed_rad_s
+        result['max_applied_torque_Nm']=self.max_applied_torque_Nm
+        result['max_carried_environment_force_N']=self.max_carried_environment_force_N
         return result
 
     def handover(self,result,transport):
@@ -370,11 +437,11 @@ class Episode:
         key=transport_fingerprint(self.model)+hashlib.sha256(inspect.getsource(plan_receiver).encode()).hexdigest()
         receiver=json.loads(path.read_text()) if path.exists() else {}
         valid=receiver.get('fingerprint')==key
-        valid &= np.allclose(receiver.get('left_q',np.full(6,99)),left_q,atol=1e-7,rtol=0)
-        if valid:valid=np.allclose(receiver['cube_pose'],cube_pose,atol=1e-7,rtol=0)
+        valid &= np.allclose(receiver.get('left_q',np.full(6,99)),left_q,atol=CACHE_STATE_ATOL,rtol=0)
+        if valid:valid=np.allclose(receiver['cube_pose'],cube_pose,atol=CACHE_STATE_ATOL,rtol=0)
         if not valid:
             print('[PLAN] Validating receiver path around the measured held cube',flush=True)
-            receiver=plan_receiver(self.model,left_q,cube_pose,reference)
+            receiver=compute_plan(plan_receiver,self.model,left_q,cube_pose,reference)
             receiver['fingerprint']=key
             path.write_text(json.dumps(jsonable(receiver),indent=2))
         result['receiver_plan']=receiver
@@ -406,7 +473,7 @@ class Episode:
         right_base=self.model.base.copy();right_base[0,3]=.25
         cube_pose=self.model.tcp_pose(left_q)@self.cube_in_tcp()
         world=CollisionWorld(self.model,cube_pose[:3,3],other_q=right_q,other_base=right_base,cube_rotation=cube_pose[:3,:3])
-        release_check=world.segment(left_q,release,margin=.001,cube_contact=True)
+        release_check=self.validate_segment('left_release',world,left_q,release,margin=.001,cube_contact=True)
         result['left_release_check']=release_check
         if not release_check['safe']:raise RuntimeError('Left release would collide with receiving hand')
         self.reference_robot='right';self.transport_reference=self.cube_in_tcp('right')
@@ -423,7 +490,7 @@ class Episode:
             heights.append(cube[2])
         result['right_only_min_force_N']=minimum_right
         result['released_left_max_force_N']=maximum_left
-        result['right_only_min_height_m']=min(heights)
+        result['right_only_min_height_m']=float(min(heights))
         if min(minimum_right)<.05 or max(maximum_left)>.05 or min(heights)<.15:
             raise RuntimeError('Right-only support not established after left release')
         result['handover_success']=True
@@ -434,16 +501,18 @@ class Episode:
 
     def place(self,result):
         """Release over the bin, retreat, and measure sustained resting support."""
+        self.phase='plan_placement'
+        if self.checkpoint:self.checkpoint()
         left_q=self.measured_q();right_q=self.measured_q('right');local=self.cube_in_tcp('right')
         path=options.output_dir/'placement_plan.json'
         key=transport_fingerprint(self.model)+hashlib.sha256(inspect.getsource(plan_placement).encode()).hexdigest()
         placement=json.loads(path.read_text()) if path.exists() else {}
         valid=placement.get('fingerprint')==key
         for name,value in (('left_start',left_q),('right_start',right_q),('cube_in_right_tcp',local)):
-            if valid:valid=np.allclose(placement[name],value,atol=1e-7,rtol=0)
+            if valid:valid=np.allclose(placement[name],value,atol=CACHE_STATE_ATOL,rtol=0)
         if not valid:
             print('[PLAN] Validating donor withdrawal and loaded bin travel',flush=True)
-            placement=plan_placement(self.model,left_q,right_q,local)
+            placement=compute_plan(plan_placement,self.model,left_q,right_q,local)
             placement['fingerprint']=key
             path.write_text(json.dumps(jsonable(placement),indent=2))
         result['placement_plan']=placement
@@ -462,7 +531,7 @@ class Episode:
         if min(self.pad_forces['right'])<.05:raise RuntimeError('Right grasp lost before bin release')
         opened=self.measured_q('right');opened[-1]=np.pi/4
         world=CollisionWorld(right_model,cube=(99,99,99),other_q=self.measured_q(),other_base=self.model.base)
-        check=world.segment(self.measured_q('right'),opened,margin=.001)
+        check=self.validate_segment('bin_opening',world,self.measured_q('right'),opened,margin=.001)
         result['bin_opening_check']=check
         if not check['safe']:raise RuntimeError('Measured bin opening path rejected')
         result['release_cube_m']=cube_pose[:3,3]
@@ -472,7 +541,9 @@ class Episode:
         world=CollisionWorld(right_model,cube_pose[:3,3],other_q=self.measured_q(),
                              other_base=self.model.base,cube_rotation=cube_pose[:3,:3])
         home=np.zeros(6);home[-1]=np.pi/4
-        check=world.segment(self.measured_q('right'),home,margin=.001)
+        self.phase='plan_right_retreat'
+        if self.checkpoint:self.checkpoint()
+        check=self.validate_segment('right_retreat',world,self.measured_q('right'),home,margin=.001)
         result['right_retreat_check']=check
         if not check['safe']:raise RuntimeError('Post-release retreat rejected')
         self.contact_arms.clear()
@@ -483,12 +554,15 @@ class Episode:
             state=self.cube.data.root_state_w[0].cpu().numpy()
             pose=transform(state[:3],Rotation.from_quat(np.roll(state[3:7],-1)).as_matrix())
             verts=apply(pose,box_mesh(np.zeros(3),np.full(3,.04),'cube').vertices)
-            support=float(self.bin_contact.get_contact_force_matrix(self.dt)[0,0,2].item())
+            support=float(self.cube_contact.get_contact_force_matrix(self.dt)[0,1,2].item())
             inside=bool(np.all(verts.min(0)>=[.27,-.11,.009]) and np.all(verts.max(0)<=[.41,.03,.085]))
             metrics.append({'inside':inside,'floor_support_N':support,'linear_speed_m_s':float(np.linalg.norm(state[7:10])),
                             'angular_speed_rad_s':float(np.linalg.norm(state[10:13]))})
         result['bin_settle_metrics']=metrics
         result['placement_cube_m']=self.cube.data.root_pos_w[0].cpu().numpy().copy()
+        result['bin_min_floor_support_N']=min(m['floor_support_N'] for m in metrics)
+        result['bin_max_linear_speed_m_s']=max(m['linear_speed_m_s'] for m in metrics)
+        result['bin_max_angular_speed_rad_s']=max(m['angular_speed_rad_s'] for m in metrics)
         if not all(m['inside'] and .3<m['floor_support_N']<.7 and m['linear_speed_m_s']<.01
                    and m['angular_speed_rad_s']<.1 for m in metrics):
             raise RuntimeError('Released cube did not remain settled inside bin on its floor')
@@ -498,17 +572,18 @@ class Episode:
 
 def main():
     if options.episodes<1:raise ValueError('episodes must be positive')
+    print(f'[RUN] stage={options.stage}, episodes={options.episodes}, headless={layout.args.headless}',flush=True)
     options.output_dir.mkdir(parents=True,exist_ok=True)
     model=SO101Model(layout.ROBOT_USD)
     calibration=calibrate(model)
     plan_path=options.output_dir/'plan.json'
     plan=json.loads(plan_path.read_text()) if plan_path.exists() else {}
     if options.stage!='model' and plan.get('fingerprint')!=fingerprint(model):
-        plan=plan_pickup(model)
+        plan=compute_plan(plan_pickup,model)
         plan['fingerprint']=fingerprint(model)
         plan_path.write_text(json.dumps(jsonable(plan),indent=2))
     run_id=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-    report={'stage':options.stage,'run_id':run_id,'headless':layout.args.headless,
+    report={'stage':options.stage,'requested_episodes':options.episodes,'run_id':run_id,'headless':layout.args.headless,
             'source_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                              for name in ('run_manipulation.py','so101_model.py','so101_planning.py')},
             'calibration':calibration,'plan':plan,'episodes':[],'status':'in_progress'}
@@ -545,11 +620,13 @@ def main():
             report['episodes'].append(result)
             report['last_episode_samples']=episode.samples
             save()
-            print(f'[EPISODE {i+1}] '+json.dumps(jsonable({k:v for k,v in result.items() if not k.endswith('_plan')})),flush=True)
+            print(f'[EPISODE {i+1}] '+json.dumps(jsonable({k:v for k,v in result.items() if not k.endswith(('_plan','_metrics'))})),flush=True)
         report['status']='passed_requested_stage'
     except Exception as exc:
         report['status']='failed';report['failure']=str(exc)
-        report['failure_state']=episode.failure_state
+        report['failure_state']=episode.failure_state or {
+            'phase':episode.phase,'left_q_rad':episode.measured_q(),'right_q_rad':episode.measured_q('right'),
+            'cube_m':episode.cube.data.root_pos_w[0].cpu().numpy().copy(),'pad_force_N':episode.pad_forces}
         report['failed_episode']=getattr(episode,'result',{})
         report['last_episode_samples']=list(episode.samples)
         try:
