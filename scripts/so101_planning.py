@@ -16,6 +16,8 @@ from benchmark_core import JointPath
 
 CACHE_STATE_ATOL=1e-5
 CACHE_MOTION_RESERVE_M=.0001
+LOADED_SOURCES={name:Path(__file__).with_name(name).read_bytes() for name in
+                ('so101_planning.py','so101_model.py','benchmark_core.py','inspect_task_layout.py')}
 
 
 def valid_cache(saved, key, **state):
@@ -36,9 +38,11 @@ def valid_cache(saved, key, **state):
 def fingerprint(model):
     """Invalidate generated plans after any asset/model/planner change."""
     h=hashlib.sha256()
-    for path in (Path(model.asset),Path(__file__).with_name('so101_model.py'),Path(__file__),Path(__file__).with_name('benchmark_core.py')):
-        h.update(path.read_bytes())
-    h.update(Path(__file__).with_name('inspect_task_layout.py').read_bytes())
+    h.update(Path(model.asset).read_bytes())
+    for name,loaded in LOADED_SOURCES.items():
+        if Path(__file__).with_name(name).read_bytes()!=loaded:
+            raise RuntimeError('Planner source changed during this process; restart before planning: '+name)
+        h.update(loaded)
     h.update(model.tcp.tobytes());h.update(model.base.tobytes());h.update(model.limits.tobytes())
     # Hash resolved geometry, including meshes supplied by referenced USDs.
     for mesh in model.meshes:
@@ -140,8 +144,16 @@ def plan_pickup(model, cube=(-.34,-.04,.02), rotation=None):
     opened = home.copy(); opened[-1] = np.deg2rad(45)
     pretarget = np.array(cube)+[0,0,.035]
     grasptarget = np.array(cube)+[0,0,.002]
-    pres = model.ik(pretarget,rotation=rotation,seeds=12)
-    grasps = model.ik(grasptarget,rotation=rotation,seeds=12)
+    references=[None,None]
+    if not np.allclose(cube,[-.34,-.04,.02],atol=1e-10,rtol=0) or not np.allclose(rotation,np.eye(3),atol=1e-10,rtol=0):
+        # Near the straight-arm singularity, zero/random initializations can
+        # miss an existing solution. Continue from solved nominal poses, then
+        # recheck the actual case's complete geometry and final IK tolerances.
+        for i,z in enumerate((.055,.022)):
+            seeds=model.ik([-.34,-.04,z],rotation=np.eye(3),seeds=12)
+            if seeds:references[i]=seeds[0]['q']
+    pres = model.ik(pretarget,rotation=rotation,seeds=12,reference=references[0])
+    grasps = model.ik(grasptarget,rotation=rotation,seeds=12,reference=references[1])
     evidence = {'pre_candidates':pres,'grasp_candidates':grasps,'rejections':[]}
     for pre in pres:
         faults=world.check(pre['q'])

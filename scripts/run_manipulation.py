@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 PROCESS_STARTED=time.perf_counter()
+PROCESS_CPU_STARTED=time.process_time()
 PLAN_TIMINGS=[]
 parser = argparse.ArgumentParser(description=__doc__,add_help=False)
 parser.add_argument('--stage', choices=('model','approach','pickup','transport','handover','full'), default='approach')
@@ -31,17 +32,26 @@ parser.add_argument('--motion-mode',choices=('legacy','continuous'),default='leg
 parser.add_argument('--viewer-delay',type=float,default=0.,help='Optional wall seconds per physics tick, GUI only')
 parser.add_argument('--suite',choices=('nominal','perturb','negative'),default='nominal')
 parser.add_argument('--case',default='nominal',help='Fixed cube pose from benchmark_core.EVALUATION_CASES')
+parser.add_argument('--record-dir',type=Path,help='Write 20 Hz RGB expert attempts, successes and failures')
+parser.add_argument('--expert-hz',type=int,choices=(20,60),default=60)
+parser.add_argument('--cases-file',type=Path,help='Explicit named cube cases and split; all cases are attempted')
+parser.add_argument('--split',choices=('train','validation','heldout'),default='train')
+parser.add_argument('--policy-socket',type=Path,help='20 Hz learned policy in the isolated Python 3.12 environment')
+parser.add_argument('--replay',type=Path,help='Replay raw 20 Hz commands through the shared physics/evaluator')
 if '--help' in sys.argv or '-h' in sys.argv:
     parser.print_help()
     print('\nIsaac launcher options also include --headless and --device cuda:0.\n'
           'See: python scripts/inspect_task_layout.py --help')
     raise SystemExit(0)
 options, rest = parser.parse_known_args()
+if options.record_dir or options.policy_socket:
+    options.expert_hz=20
+    if '--enable_cameras' not in rest:rest.append('--enable_cameras')
 sys.argv=[sys.argv[0],*rest]
 import inspect_task_layout as layout
 import numpy as np
 from scipy.spatial.transform import Rotation
-from benchmark_env import BenchmarkEnv
+from benchmark_env import BenchmarkEnv, configure_cameras
 from benchmark_core import EVALUATION_CASES, JointPath, quintic, trajectory_limits, transfer_metrics
 from so101_model import SO101Model, calibrate, jsonable, transform, apply, box_mesh, LINK_NAMES
 from so101_planning import (plan_pickup, plan_lift, plan_transport, plan_receiver, plan_placement,
@@ -55,12 +65,13 @@ def compute_plan(function,*args,**kwargs):
     planning. The worker touches only the already-loaded NumPy robot model.
     """
     started=time.perf_counter()
+    cpu_started=time.process_time()
     name=function.__qualname__
     print(f'[PLAN] {name}: computing CPU checks; physics paused.',flush=True)
     if layout.args.headless:
         result=function(*args,**kwargs)
         elapsed=time.perf_counter()-started
-        PLAN_TIMINGS.append(dict(function=name,wall_s=elapsed))
+        PLAN_TIMINGS.append(dict(function=name,wall_s=elapsed,cpu_s=time.process_time()-cpu_started))
         print(f'[PLAN DONE] {name}: {elapsed:.2f}s',flush=True)
         return result
     with ThreadPoolExecutor(max_workers=1) as worker:
@@ -72,7 +83,7 @@ def compute_plan(function,*args,**kwargs):
             time.sleep(.02)
         result=future.result()
     elapsed=time.perf_counter()-started
-    PLAN_TIMINGS.append(dict(function=name,wall_s=elapsed))
+    PLAN_TIMINGS.append(dict(function=name,wall_s=elapsed,cpu_s=time.process_time()-cpu_started))
     print(f'[PLAN DONE] {name}: {elapsed:.2f}s',flush=True)
     return result
 
@@ -113,6 +124,10 @@ class Episode:
         self.fault=None
         self.plan_dir=options.output_dir
         self.motion_timing=[]
+        self.writer=None
+        self.held_action=None
+        self.source_sha256={}
+        self.split='fixed_regression'
 
     def measured_q(self,side='left'):
         arm=self.left if side=='left' else self.right
@@ -214,7 +229,17 @@ class Episode:
             if side=='left':target[-1]=command
             else:self.right_target[-1]=command
         self.left_target=target.copy()
-        frame=self.env.advance(np.stack([target,self.right_target]),evaluate=check)
+        action=np.stack([target,self.right_target])
+        if options.expert_hz==20:
+            if self.env.total_steps%3==0 or self.held_action is None:
+                self.held_action=action.copy()
+                if self.writer:
+                    self.writer.begin(self.env.frame,self.env.capture_images(),self.held_action)
+            action=self.held_action
+        before=self.env.total_steps
+        try:frame=self.env.advance(action,evaluate=check)
+        finally:
+            if self.writer and self.env.total_steps==before+1:self.writer.applied(action)
         self.max_feedforward_Nm=max(self.max_feedforward_Nm,float(np.abs(frame.gravity).max()))
         self.max_speed_rad_s=max(self.max_speed_rad_s,float(np.abs(frame.qd).max()))
         self.max_applied_torque_Nm=max(self.max_applied_torque_Nm,float(np.abs(frame.effort).max()))
@@ -311,6 +336,9 @@ class Episode:
         return self.check_fk(side)
 
     def reset(self):
+        for name,expected in self.source_sha256.items():
+            if hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()!=expected:
+                raise RuntimeError('Source changed during this run; restart before reset: '+name)
         self.phase='reset';self.contact_allowed=False;self.baseline=None
         self.transport_reference=None
         self.reference_robot='left';self.contact_arms={'Left_Robot'}
@@ -320,6 +348,7 @@ class Episode:
         self.max_transport_slip_m=0.;self.max_transport_rotation_deg=0.
         self.transfer_trace=[];self.receiver_unloaded_ticks=0;self.nominal_trajectory_peaks=[]
         self.motion_timing=[]
+        self.held_action=None
         xy,yaw,seed=EVALUATION_CASES[self.case]
         self.env.reset(xy,yaw,seed);self.tick+=180
         self.baseline=self.cube.data.root_pos_w[0].cpu().numpy().copy()
@@ -340,6 +369,15 @@ class Episode:
                 'reset_fk':self.reset(),'pickup_success':False,'lift_success':False,'handover_success':False,
                 'placement_success':False,'full_task_success':False}
         self.result=result
+        if options.record_dir and options.stage!='model':
+            from dataset_io import EpisodeWriter
+            root=options.record_dir/f'{self.case}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")}'
+            self.writer=EpisodeWriter(root,dict(case=self.case,configuration=EVALUATION_CASES[self.case],
+                cameras=self.env.camera_metadata(),image_shape=[224,224,3],motion_mode=options.motion_mode,split=self.split,
+                source_revision=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+                source_sha256=self.source_sha256,
+                physics_hz=60,expert_command_hz=20,controller='privileged geometric expert'))
+            result['recording_dir']=str(root)
         if options.stage=='model':
             before=self.env.total_steps
             observation,terminal,metrics=self.env.step(np.zeros((2,6)))
@@ -357,6 +395,7 @@ class Episode:
             return result
         waypoints=[np.array(q) for q in plan['waypoints']]
         if not waypoints:
+            self.phase='plan_pickup'
             result['approach_plan_evidence_path']=str(self.plan_dir/'plan.json')
             raise RuntimeError('No validated approach path: '+plan.get('failure','IK/collision feasibility rejected'))
         for i,phase in enumerate(('open','pregrasp','grasp')):
@@ -630,12 +669,78 @@ class Episode:
         result['full_task_success']=all(result[k] for k in ('pickup_success','lift_success','handover_success','placement_success'))
 
 
+def evaluate_policy(env,case):
+    """Same reset, actuators, physics and evaluator; no expert control or plans."""
+    from multiprocessing.connection import Client
+    xy,yaw,seed=EVALUATION_CASES[case]
+    env.reset(xy,yaw,seed);latency=[];connection=None;actions=None
+    result=dict(case=case,configuration=EVALUATION_CASES[case],controller='learned' if options.policy_socket else 'recorded_targets',
+                reset=env.evaluator.report()['reset'])
+    try:
+        if options.policy_socket:
+            connection=Client(str(options.policy_socket),family='AF_UNIX')
+            connection.send(dict(command='reset'));assert connection.recv()['ok']
+        else:
+            from dataset_io import validate_episode
+            validate_episode(options.replay)
+            recorded=json.loads((options.replay/'episode.json').read_text())
+            if not np.allclose(np.r_[xy,yaw],np.r_[recorded['configuration'][0],recorded['configuration'][1]],rtol=0,atol=1e-9):
+                raise ValueError('Replay reset configuration differs from the recording')
+            with np.load(options.replay/'trajectory.npz') as data:actions=data['action'].copy()
+        for step in range(round(env.evaluator.spec.timeout_s*20)+1):
+            if connection:
+                images=env.capture_images()
+                state=np.r_[env.frame.q.ravel(),env.frame.qd.ravel()].astype(np.float32)
+                # Bytes/lists avoid NumPy 1.x/2.x pickle implementation coupling.
+                started=time.perf_counter();connection.send(dict(command='action',state=state.tolist(),
+                    images={key:value.tobytes() for key,value in images.items()}))
+                response=connection.recv();latency.append(dict(round_trip_s=time.perf_counter()-started,
+                                                              model_s=response['inference_wall_s']))
+                action=response['action']
+            else:
+                # Keep the last actual target for terminal dwell; never copy
+                # recorded physical states into the running simulation.
+                action=actions[min(step,len(actions)-1)]
+                if step>=len(actions)+60:raise RuntimeError('Replay failed terminal dwell within 3 seconds')
+            _,terminal,_=env.step(np.asarray(action).reshape(2,6))
+            if step%200==0:
+                print(f'[POLICY] {case}: {step+1} policy steps; stages={env.evaluator.flags}',flush=True)
+            if terminal:break
+        result['status']='passed' if env.evaluator.success else 'failed'
+        result['failure_category']=env.evaluator.failure
+    except Exception as exc:
+        result.update(status='failed',failure=str(exc),failure_category=env.evaluator.failure or 'policy_adapter')
+    finally:
+        if connection:connection.close()
+    evaluation=env.evaluator.report();result['independent_evaluation']=evaluation
+    for key,value in evaluation['stages'].items():result[key+'_success']=value
+    result['full_task_success']=evaluation['success']
+    result['inference_samples']=len(latency)
+    if latency:
+        result['latency_s']={key:dict(mean=float(np.mean([r[key] for r in latency])),
+            p95=float(np.percentile([r[key] for r in latency],95)),maximum=max(r[key] for r in latency)) for key in latency[0]}
+    return result
+
+
 def main():
     if options.episodes<1:raise ValueError('episodes must be positive')
+    if options.policy_socket or options.replay:
+        if options.stage!='full':raise ValueError('Policy/replay evaluation requires --stage full')
+        if options.policy_socket and options.replay:raise ValueError('Choose policy inference or recorded replay')
+        if options.record_dir:raise ValueError('--record-dir is for expert demonstrations')
+    cases_document=None
+    if options.cases_file:
+        cases_document=json.loads(options.cases_file.read_text())
+        if cases_document['schema']!='so101-cases-1.0':raise ValueError('Unsupported case schema')
+        if 'splits' in cases_document:
+            cases_document=dict(cases_document,cases=cases_document['splits'][options.split],split=options.split)
+            cases_document.pop('splits')
+        EVALUATION_CASES.update({row['name']:(tuple(row['cube_xy_m']),row['yaw_deg'],row['seed']) for row in cases_document['cases']})
     if options.case not in EVALUATION_CASES:raise ValueError(f'Unknown case {options.case}; choose {list(EVALUATION_CASES)}')
     if options.suite=='negative' and options.stage!='full':raise ValueError('Negative suite requires --stage full')
     if options.suite=='perturb' and options.stage not in ('model','full'):raise ValueError('Perturbation suite requires --stage model/full')
     cases=[(options.case,None)]
+    if options.cases_file:cases=[(row['name'],None) for row in cases_document['cases']]
     if options.suite=='perturb':cases=[(name,None) for name in EVALUATION_CASES]
     if options.suite=='negative':cases=[('nominal','grasp'),('nominal','transfer')]
     print(f'[RUN] stage={options.stage}, suite={options.suite}, episodes/case={options.episodes}, headless={layout.args.headless}',flush=True)
@@ -645,11 +750,15 @@ def main():
     started=time.perf_counter();calibration=calibrate(model)
     calibration_s=time.perf_counter()-started
     run_id=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-    sources=('run_manipulation.py','so101_model.py','so101_planning.py','benchmark_core.py','benchmark_env.py','inspect_task_layout.py')
+    sources=('run_manipulation.py','so101_model.py','so101_planning.py','benchmark_core.py','benchmark_env.py','inspect_task_layout.py','dataset_io.py')
     report={'stage':options.stage,'suite':options.suite,'requested_episodes_per_case':options.episodes,
             'requested_episodes':options.episodes*len(cases),'run_id':run_id,'headless':layout.args.headless,
             'handover_mode':options.handover_mode,'source_revision':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
             'motion_mode':options.motion_mode,'viewer_delay_s':options.viewer_delay,
+            'expert_command_hz':options.expert_hz,
+            'controller':'learned' if options.policy_socket else ('replay' if options.replay else 'expert'),
+            'cases_document':cases_document,'policy_socket':str(options.policy_socket) if options.policy_socket else None,
+            'replay':str(options.replay) if options.replay else None,
             'tracked_source_dirty':bool(subprocess.run(['git','diff','--quiet'],check=False).returncode),
             'source_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in sources},
             'calibration':calibration,'geometry_loading_s':geometry_s,'calibration_s':calibration_s,
@@ -665,6 +774,7 @@ def main():
     save()
     sim=layout.SimulationContext(layout.sim_utils.SimulationCfg(device=layout.args.device))
     cfg=layout.BimanualSceneCfg(num_envs=1,env_spacing=2.)
+    if options.record_dir or options.policy_socket:configure_cameras(cfg)
     cfg.left_arm.init_state.pos=layout.LEFT_BASE_M;cfg.right_arm.init_state.pos=layout.RIGHT_BASE_M
     cfg.left_arm.spawn.activate_contact_sensors=True;cfg.right_arm.spawn.activate_contact_sensors=True
     cfg.cube.spawn.activate_contact_sensors=True
@@ -674,6 +784,9 @@ def main():
     scene=layout.InteractiveScene(cfg);sim.reset()
     sim.set_camera_view(eye=(.8,.9,.7),target=(0,-.12,.10))
     episode=Episode(sim,scene,model)
+    episode.source_sha256=report['source_sha256']
+    if cases_document:episode.split=cases_document.get('split',options.split)
+    report['camera_calibration']=episode.env.camera_metadata()
     report['cold_start_wall_s']=time.perf_counter()-PROCESS_STARTED
     report['cube_com_offset_body_m']=episode.cube.data.body_com_pos_b.cpu().numpy()
     def checkpoint():
@@ -693,6 +806,15 @@ def main():
     try:
         for case,fault in cases:
             episode.case=case;episode.fault=fault
+            if options.policy_socket or options.replay:
+                for repetition in range(options.episodes):
+                    started=time.perf_counter();before=dict(episode.env.timings)
+                    result=evaluate_policy(episode.env,case)
+                    result.update(repetition=repetition+1,episode_wall_s=time.perf_counter()-started,
+                                  environment_timing_s={k:v-before[k] for k,v in episode.env.timings.items()})
+                    report['episodes'].append(result);save()
+                    if not result['full_task_success']:unexpected_failures.append(dict(case=case,failure=result['failure_category']))
+                continue
             episode.plan_dir=options.output_dir/'plans'/case/options.handover_mode/options.motion_mode
             episode.plan_dir.mkdir(parents=True,exist_ok=True)
             xy,yaw,seed=EVALUATION_CASES[case]
@@ -732,6 +854,9 @@ def main():
                     expected=(fault=='grasp' and 'No sustained bilateral cube contact' in error
                               or fault=='transfer' and 'Right grasp has insufficient bilateral preload' in error)
                     result['expected_failure_detected']=bool(expected and not episode.env.evaluator.success)
+                    if episode.writer:
+                        episode.writer.finish(False,result['independent_evaluation'],episode.env.frame)
+                        episode.writer=None
                     if not expected:unexpected_failures.append(dict(case=case,repetition=repetition+1,failure=error))
                     try:
                         episode.checkpoint=None;result['failure_reset']=episode.reset()
@@ -748,12 +873,15 @@ def main():
                 if error is None:
                     result['transfer_trace']=list(episode.transfer_trace)
                     result['transfer_metrics']=transfer_metrics(episode.transfer_trace)
+                    if episode.writer:
+                        episode.writer.finish(bool(result.get('full_task_success')),episode.env.evaluator.report(),episode.env.frame)
+                        episode.writer=None
                 result['repetition']=repetition+1
                 report['episodes'].append(result);report['last_episode_samples']=episode.samples
                 save()
                 print(f'[EPISODE] {case}/{repetition+1}: {result["status"]}',flush=True)
-                if error and options.suite=='nominal':break
-            if unexpected_failures and options.suite=='nominal':break
+                if error and options.suite=='nominal' and not options.cases_file:break
+            if unexpected_failures and options.suite=='nominal' and not options.cases_file:break
         report['status']='failed' if unexpected_failures else ('passed_negative_regression' if options.suite=='negative' else 'passed_requested_stage')
     finally:
         keys=('approach_success','pickup_success','lift_success','transport_success','handover_success','placement_success','full_task_success')
@@ -765,6 +893,7 @@ def main():
             full_task_success=sum(e['case']==case and bool(e.get('full_task_success')) for e in report['episodes'])) for case,_ in cases}
         report['logging_wall_s']=logging_s
         report['total_wall_s']=time.perf_counter()-PROCESS_STARTED
+        report['process_cpu_s']=time.process_time()-PROCESS_CPU_STARTED
         save()
     print('[RESULT]',report['status'],flush=True)
     if unexpected_failures:raise RuntimeError(f'{len(unexpected_failures)} unexpected failure(s); see {path}')
@@ -772,13 +901,19 @@ def main():
         print('[VIEWER] Evaluation saved. Final state frozen for inspection; close the window to exit.',flush=True)
         sim.clear_all_callbacks()
         while layout.app.is_running():sim.render();time.sleep(.02)
+    return sim,scene,episode
 
 
 if __name__=='__main__':
-    try:main()
+    try:handles=main()
     except BaseException:
         traceback.print_exc();sys.stdout.flush();sys.stderr.flush();os._exit(1)
     else:
+        # Destroy RTX sensors while scene/PhysX views remain strongly owned.
+        # Sim 5.1 prim-deletion callbacks contain weak proxies; collecting the
+        # whole scene at once can otherwise abort during Replicator detach.
+        import gc
+        handles[2].env.cameras.clear();handles[1].sensors.clear();gc.collect()
         sim=layout.SimulationContext.instance()
         if sim is not None:sim.clear_all_callbacks();sim.clear_instance()
         layout.app.close(wait_for_replicator=False)

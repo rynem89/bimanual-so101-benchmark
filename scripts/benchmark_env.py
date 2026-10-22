@@ -16,6 +16,23 @@ import omni.physics.tensors as tensors
 from so101_model import JOINT_NAMES, LINK_NAMES, transform
 from benchmark_core import Frame, TaskEvaluator, TaskSpec
 
+CAMERA_VIEWS = {
+    'overview': ((0., -.12, .92), (0., -.12, .04)),
+    'front': ((0., .72, .56), (0., -.14, .12)),
+}
+
+
+def configure_cameras(scene_cfg):
+    """Opt-in Isaac Lab 2.3 RGB sensors; never installed into oracle state."""
+    from isaaclab.sensors import CameraCfg
+    from isaaclab.sim import PinholeCameraCfg
+    for name in CAMERA_VIEWS:
+        setattr(scene_cfg, name, CameraCfg(
+            prim_path='{ENV_REGEX_NS}/'+name, update_period=0.,
+            height=224, width=224, data_types=['rgb'],update_latest_camera_pose=True,
+            spawn=PinholeCameraCfg(focal_length=18., horizontal_aperture=20.955,
+                                  clipping_range=(.01, 10.))))
+
 
 class BenchmarkEnv:
     def __init__(self, sim, scene, model, layout):
@@ -43,11 +60,51 @@ class BenchmarkEnv:
             raise RuntimeError('Robot pairwise contact prerequisites failed')
         self.evaluator=TaskEvaluator(model.limits,model.adjacent,TaskSpec(physics_dt=self.dt))
         self.total_steps=0
-        self.timings={name:0. for name in ('actuation','physics','rendering','observations','evaluation','reset')}
+        self.timings={name:0. for name in ('actuation','physics','rendering','observations','evaluation','reset','camera')}
         self.frame=None
         self.matrices=[]
         self.targets=np.zeros((2,6))
         self.gravity=np.zeros((2,6))
+        self.cameras={name:scene.sensors[name] for name in CAMERA_VIEWS if name in scene.sensors}
+        for name,camera in self.cameras.items():
+            eye,target=CAMERA_VIEWS[name]
+            camera.set_world_poses_from_view(torch.tensor([eye],device=sim.device),
+                                            torch.tensor([target],device=sim.device))
+        if self.cameras:
+            # Warm RTX/Replicator buffers without advancing physical time.
+            for _ in range(4):self.capture_images()
+
+    def capture_images(self):
+        """RGB at the current physics state, rendered before the next action.
+
+        Sensor buffers are recomputed after rendering (update_period=0), even if simulation time
+        is frozen for planning. No camera advances physics or reads labels.
+        """
+        if not self.cameras:raise RuntimeError('Launch with cameras enabled')
+        started=time.perf_counter();self.sim.render();images={}
+        for name,camera in self.cameras.items():
+            camera.update(0.,force_recompute=True)
+            rgb=camera.data.output['rgb'][0,:,:,:3].cpu().numpy().copy()
+            if rgb.shape!=(224,224,3) or rgb.dtype!=np.uint8 or rgb.std()<2:
+                raise RuntimeError(f'Invalid camera buffer: {name}')
+            images[name]=rgb
+        self.timings['camera']+=time.perf_counter()-started
+        return images
+
+    def camera_metadata(self):
+        for name,camera in self.cameras.items():
+            if not torch.isclose(camera.data.quat_w_world[0].norm(),torch.tensor(1.,device=self.sim.device),atol=1e-5):
+                raise RuntimeError('Uninitialized camera pose buffer: '+name)
+            if not np.allclose(camera.data.pos_w[0].cpu().numpy(),CAMERA_VIEWS[name][0],atol=1e-6,rtol=0):
+                raise RuntimeError('Camera eye differs from configuration: '+name)
+        return {name:dict(eye_m=CAMERA_VIEWS[name][0],target_m=CAMERA_VIEWS[name][1],
+                         intrinsic=camera.data.intrinsic_matrices[0].cpu().numpy().tolist(),
+                         position_world_m=camera.data.pos_w[0].cpu().numpy().tolist(),
+                         quaternion_world_wxyz=camera.data.quat_w_world[0].cpu().numpy().tolist(),
+                         quaternion_ros_wxyz=camera.data.quat_w_ros[0].cpu().numpy().tolist(),
+                         resolution=[224,224],fps=20,channels='RGB uint8',
+                         focal_length_mm=18.,horizontal_aperture_mm=20.955)
+                for name,camera in self.cameras.items()}
 
     @staticmethod
     def label(path):
@@ -58,7 +115,7 @@ class BenchmarkEnv:
     def observe(self, privileged=False):
         """Proprioceptive policy track; explicit oracle track for expert/evaluator.
 
-        Cameras are not configured yet. Object pose/contact/mesh information is
+        RGB is explicitly opt-in via capture_images(). Object/contact/mesh data is
         privileged and must not silently enter a future vision policy's inputs.
         """
         if self.frame is None:raise RuntimeError('Reset before observation')

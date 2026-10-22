@@ -99,11 +99,14 @@ policy targets → BenchmarkEnv → Isaac Sim / PhysX → measured Frame → Tas
 position targets of shape `(2,6)` in radians for three ticks (**20 Hz**). Shared
 implicit PD and robot gravity feed-forward remain part of the environment.
 Default observations are joint positions, velocities and the previous action.
-Object poses, contacts and geometry are an explicitly privileged track used by
-the expert/evaluator; cameras are not configured. The expert updates grip at
-60 Hz, so a future 20 Hz learned comparison must disclose or remove this
-frequency/privilege advantage. This is an incremental adapter, not a registered
-Gym environment or an implemented IL/RL/VLA pipeline.
+Object poses, contacts and geometry are privileged expert/evaluator inputs.
+The RGB learning track receives only 24 proprioceptive values (12 positions,
+12 velocities) and two RGB images. The reference expert proposes grip
+corrections at 60 Hz; `--record-dir` selects exact 20 Hz sample-and-hold actuator
+commands for demonstrations. Internal expert contact feedback remains privileged.
+Learned policies have no expert grip servo, IK, collision planner, future
+actions, object state or success labels at inference. All policies share the
+implicit PD actuators, gravity feed-forward and independent evaluator.
 
 The evaluator imports no expert/planner and accepts no expert phase/success
 flags. It derives success from physics observations:
@@ -189,7 +192,7 @@ python -m unittest discover -s tests -v
 python scripts/so101_planning.py --profile --output outputs/controller/profile_final.json
 ```
 
-Current CPU regression: **24 tests passed**, including independent evaluator
+Current CPU regression: **28 tests passed**, including independent evaluator
 false-positive/negative cases, timeout/reset, FK/IK, triangle containment,
 rotated/acute convex envelopes, ambiguous LP status, trajectory derivatives and
 cache invalidation. Complete approach tests compare every optimized hull query
@@ -224,9 +227,107 @@ NVIDIA 580.178.04, CUDA 12.8.1, Python 3.11.16, torch 2.7.0+cu128,
 Isaac Sim 5.1.0, Isaac Lab 2.3.0 (`3c6e67bb5c7ada942a6d1884ab69338f57596f77`),
 LeIsaac 0.4.0 (`24d3bcd`). NumPy 1.26.0 handles geometry; SciPy 1.15.3 supplies
 bounded optimization, rotations, convex hulls and LP; bundled USD composes the
-actual robot asset. PhysX supplies dynamics and measured contacts. No new
-packages were added. Installation history and pinned-path details stay in the
+actual robot asset. PhysX supplies dynamics and measured contacts. No packages were changed in `leisaac-sim`. The isolated training environment
+below is new. Installation history and pinned-path details stay in the
 handoff. cuRobo and MoveIt are assessed there, not installed dependencies.
+
+
+## Demonstrations and official LeRobot policies
+
+The end-to-end **smoke pipeline works**: physical 20 Hz expert recording,
+independent replay, local LeRobotDataset **v3.0** conversion, official ACT and
+Diffusion GPU training, saved/reloaded checkpoints and real simulator evaluation.
+This is not yet a successful learned manipulation benchmark. Initial 20-update
+ACT: **0/1**, 300 s timeout, no pickup. Diffusion: **0/1**, actuator-limit failure
+at 0.05 s with two collision violations. These tiny training runs test plumbing;
+their losses are not comparable success metrics. Larger-data results remain pending.
+
+Two fixed 224×224 RGB cameras use Isaac Lab 2.3 `CameraCfg`: overhead eye
+`(0,-.12,.92)` m and front eye `(0,.72,.56)` m, with targets in
+`benchmark_env.CAMERA_VIEWS`. Focal length 18 mm, horizontal aperture 20.955 mm,
+clipping .01–10 m. Capture renders the current physical state before the next
+20 Hz action. Raw metadata stores measured intrinsics/extrinsics. A stale camera
+pose-buffer bug in the first smoke recording was found and corrected; that
+recording remains diagnostic, not a production calibration reference. RGB
+projection checks against measured cube positions are recorded in the handoff.
+
+Each successful raw episode contains `trajectory.npz` with `(N,24)` state,
+`(N,12)` absolute target actions in radians, `(N,3,12)` actual substep targets,
+physics indices and timestamps; PNGs; `episode.json`; and a separate
+`privileged.json` for object/contact diagnostics. Left six joints precede right
+six: pan, lift, elbow, wrist flex, wrist roll, jaw. Velocities use the same order.
+Frames describe state **before** the action held for the next three ticks.
+Partial terminal transitions are excluded and explicitly counted; final physical
+state is retained separately. Failed attempts are kept and counted, but excluded
+from successful demonstration conversion. Validation rejects missing RGB,
+nonfinite/misaligned targets and invalid camera calibration. A local v3 dataset
+embeds images in parquet; no video codec or Hub upload is required.
+
+The original symmetric ±10 mm X / ±7 mm Y / ±6° candidate distribution produced
+**2/4 full successes**, with two pre-grasp collision rejections. IK continuation
+found nearby solutions but correctly retained unsafe-path rejection. Reducing the
+pre-grasp height and receiver orientation alternatives did not resolve the
+failures; these were not adopted. The versioned inward candidate distribution
+uses X offsets ±10 mm, Y offsets −12 to −4 mm, yaw ±6°. **12/12 independent offline
+approach draws passed complete path checks**; full physical coverage is pending.
+The manifest fixes 32 training, 8 validation and 30 held-out cases with separate
+seeds. A geometric pass is not a manipulation success; all physical failures
+must remain in the denominator. The fixed nominal and −1° regressions remain
+separate, including the unresolved receiver limitation.
+
+Use separate shells/environments:
+
+```bash
+# Original simulator environment; GUI remains the default.
+python scripts/run_manipulation.py --stage full --motion-mode continuous \
+  --cases-file configs/task_distribution.json --split train \
+  --record-dir datasets/raw_train_v2
+
+# A different shell: isolated training, never activate over a running simulator.
+source /home/rynem8/miniforge3/etc/profile.d/conda.sh
+conda activate so101-il-py312
+python scripts/policy_pipeline.py convert --raw datasets/raw_train_v2 --output datasets/lerobot_train_v2
+python scripts/policy_pipeline.py train --dataset datasets/lerobot_train_v2 \
+  --output checkpoints/act_v2 --method act --steps 2000
+python scripts/policy_pipeline.py serve --checkpoint checkpoints/act_v2/pretrained_model \
+  --socket /tmp/so101_act.sock
+
+# Original simulator environment, separate shell; no expert plans are used.
+python scripts/run_manipulation.py --stage full --policy-socket /tmp/so101_act.sock
+# The same interface accepts --cases-file ... --split heldout.
+# Recorded replay: --stage full --replay datasets/raw_train_v2/<episode_directory>
+```
+
+Choose a **new** output directory for each conversion/training run; existing
+artifacts are preserved. Record validation/test splits into separate directories
+and never mix their statistics into training. Generated data, caches and weights
+are ignored by Git. `--headless` changes rendering/UI visibility, not physics or
+policy frequency. Expensive inference pauses simulated time: 20 Hz is the
+simulated interface, not a claim that every action meets the 50 ms wall budget.
+
+Training lock: Python 3.12.15, LeRobot 0.6.1, NumPy 2.2.6, torch 2.7.1+cu128,
+torchvision 0.22.1+cu128, torchcodec 0.5.0, PyAV 15.1.0; full dependency versions in
+`configs/il_requirements.lock.txt`. CUDA matrix multiplication and both official
+policy imports passed on RTX 5090 sm_120; `pip check` passed. Recreate only in
+an isolated environment using the CUDA 12.8 PyTorch index and that lock. The
+original simulation stack and NVIDIA driver remain unchanged.
+
+ACT uses official LeRobot ResNet18 image encoding, a conditional VAE transformer
+and 40-target chunks, executing 20 actions per query (1 s). The first configuration
+has model width 256, 8 heads, 4 encoder layers and one decoder. Diffusion uses the
+official conditional U-Net `(128,256,512)`, two observation frames, horizon 32,
+16 executed actions and 10 DDIM inference steps. Both normalize observations and
+unnormalize targets through saved official processors; neither computes online
+IK or a separate robot trajectory. Their 12 targets go directly to the common
+20 Hz actuator interface. Seed, architecture, losses, compute and finite-action
+checks are saved in each checkpoint's `training.json`. Checkpoints every 500
+updates protect longer runs. Initial varied dataset: two successes from four
+attempts, **5,858 frames**, 292.9 s at 20 Hz; this remains a small diagnostic set.
+
+Official pinned sources: [LeRobot v0.6.1](https://github.com/huggingface/lerobot/tree/v0.6.1),
+[ACT](https://github.com/huggingface/lerobot/tree/v0.6.1/src/lerobot/policies/act),
+[Diffusion](https://github.com/huggingface/lerobot/tree/v0.6.1/src/lerobot/policies/diffusion),
+[Isaac Lab 2.3 cameras](https://isaac-sim.github.io/IsaacLab/v2.3.0/source/overview/core-concepts/sensors/camera.html).
 
 ## File inventory
 
@@ -247,8 +348,11 @@ the bundled USD paths above. Imported modules have no separate run command.
 | `tests/test_finger_geometry.py` | Analytic triangle sections and missing prerequisites → unittest results. |
 | `scripts/verify_motion_gripper_reset.py` | Preserved independent motion/jaw/reset regression; run as simulator script. |
 | `scripts/inspect_bimanual_scene.py`, `scripts/inspect_fk_frames.py` | Historical simulator scene/frame diagnostics; standalone scripts, preserved. |
-| `scripts/probe_workspace.py`, `scripts/probe_coordinated_workspace.py` | Historical unsafe joint-grid explorations, outside active workflow; proposed removal awaits approval. |
-| `scripts/calibrate_so101_fingertips.py` | Pre-existing untracked failed collider discovery, preserved; superseded by maintained triangle audit. |
+| `scripts/dataset_io.py` | Versioned raw demonstration writer/validator; measured frames + actual held targets + RGB → NPZ/PNG/JSON. Imported; no Kit/LeRobot dependency. |
+| `scripts/policy_pipeline.py` | Isolated LeRobot v0.6.1 `convert`, `train`, `serve`; raw episodes → v3 images/parquet → official checkpoint → Unix-socket actions. |
+| `configs/task_distribution.json` | Seeded candidate train/validation/held-out poses, disjoint configurations; physical coverage must be reported. |
+| `configs/il_requirements.lock.txt` | Exact installed Python 3.12 training packages; never install into the simulation environment. |
+| `tests/test_dataset.py` | Actual-file chronology, held targets, RGB presence, privilege isolation and terminal-transition validation. |
 | `docs/ROBOTICS_CODEX_HANDOFF.md` | Environment locks, dated commands/results, audit and deeper learning notes. |
 | `AGENTS.md` | Operating contract; required configuration. |
 | `.gitignore`, `.vscode/settings.json` | Generated/secret exclusions and existing Conda editor integration. |
@@ -256,7 +360,6 @@ the bundled USD paths above. Imported modules have no separate run command.
 Known limits: task-specific local planning, single simulated scene/hardware,
 compliant transfer, authored/cooked geometry differences, no certified tracking
 tube or continuous-contact guarantee between physics ticks, no real-robot trials. Future ACT, diffusion, RL and compact VLA comparisons
-must share the evaluator, declare observations/action rate, use held-out scene
-conditions and report uncertainty. The current mission authorizes isolated ACT/Diffusion training after physical
-recording and held-out coverage are validated. Until then these are incomplete
-milestones, not benchmark results.
+share the evaluator and disclose observation/action rate and privileged expert
+access. Substantial data collection, trained-policy success, held-out statistical
+comparison, cuRobo experiments and a publishable comparison demo remain incomplete.

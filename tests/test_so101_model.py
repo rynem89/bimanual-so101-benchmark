@@ -86,6 +86,19 @@ class ModelTests(unittest.TestCase):
     def test_unreachable_target_is_rejected(self):
         self.assertEqual(self.model.ik([2,2,2],seeds=2),[])
 
+    def test_pickup_continuation_retains_collision_rejection(self):
+        from scipy.spatial.transform import Rotation
+        from so101_planning import plan_pickup
+        # First preselected wider-distribution draw: zero/random initialization
+        # formerly returned no IK. Continuation converges, but the near-limit
+        # pregrasp still intersects the cube and must NEVER be executed.
+        plan=plan_pickup(self.model,[-.3481787,-.0335215,.02],
+                         Rotation.from_euler('z',.3261,degrees=True).as_matrix())
+        self.assertTrue(plan['ik']['pre_candidates'])
+        self.assertTrue(plan['ik']['grasp_candidates'])
+        self.assertEqual(plan['waypoints'],[])
+        self.assertIn('cube:gripper',plan['ik']['rejections'][0]['faults'])
+
     def test_cube_fits_open_but_intersects_closed_authored_mesh(self):
         rows=self.calibration['surface_checks']
         self.assertTrue(rows[0]['surface_intersections_with_42mm_box'])
@@ -110,7 +123,8 @@ class ModelTests(unittest.TestCase):
         print(f'Collision equivalence: {count} LP queries, {samples} path samples',flush=True)
 
     def test_cache_invalidates_geometry_calibration_settings_and_changed_state(self):
-        from so101_planning import fingerprint,valid_cache
+        from unittest.mock import patch
+        from so101_planning import fingerprint,valid_cache,LOADED_SOURCES
         key=fingerprint(self.model);q=np.zeros(6)
         saved=dict(fingerprint=key,q=q.tolist())
         self.assertTrue(valid_cache(saved,key,q=q+1e-6))
@@ -123,6 +137,8 @@ class ModelTests(unittest.TestCase):
         mesh=self.model.meshes[0];mesh.triangles[0,0,0]+=.001
         try:self.assertNotEqual(fingerprint(self.model),key)
         finally:mesh.triangles[0,0,0]-=.001
+        with patch.dict(LOADED_SOURCES,{'benchmark_core.py':b'older loaded algorithm'}):
+            with self.assertRaisesRegex(RuntimeError,'source changed'):fingerprint(self.model)
 
 
 if __name__=='__main__':unittest.main()

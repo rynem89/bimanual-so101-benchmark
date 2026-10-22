@@ -973,3 +973,228 @@ launched for one user visual checkpoint, log `il_continuous_gui.log`; no artific
 CPU regression on these motion sources: `python -m unittest discover -s tests -v`,
 24/24 passed in 37.647 s (`il_motion_tests.log`), exit 0. Includes independent
 evaluator, geometry/LP equivalence and analytic C2/velocity/acceleration checks.
+
+
+## Camera, dataset and official-policy pipeline (2026-10-22)
+
+Milestone implementation extends BenchmarkEnv instead of duplicating scene or
+evaluation. CLI `--record-dir` implies actual 20 Hz sample-and-hold expert targets
+and opts into Isaac Lab 2.3 RGB sensors before AppLauncher. The expert still uses
+privileged contact/geometry at 60 Hz internally; its commanded 12 joint targets
+are held unchanged for all three physics ticks. Policies have only 24 joint
+position/velocity scalars and RGB, with no object/contact/phase/completion input.
+The shared 60 Hz implicit PD and robot gravity compensation remain unchanged.
+No task-time physical state writes or attachments were introduced.
+
+### Exact physical recording / replay
+
+`--headless --stage full --motion-mode continuous --record-dir datasets/raw_smoke`
+produced `full_20261022T145012629805Z.json`: full independent success, 150.6833 s
+including reset, 147.65 s / 2,953 complete policy frames plus two terminal ticks.
+Joint order is left then right: shoulder_pan, shoulder_lift, elbow_flex,
+wrist_flex, wrist_roll, gripper. Absolute radians target labels are the exact
+float32 actuator values, not next observed states. NPZ retains each actual
+3-tick target sequence, image/physics indices, seconds and q/qd. PNGs are
+pre-action. Privileged cube/contact measurements live in separate diagnostics.
+Terminal partial transitions are excluded; final state and tick count retained.
+Completed failures and interrupted attempts are distinct from successful data.
+The final writer saves attempt metadata immediately, partial trajectories every
+200 frames, and never overwrites an existing attempt directory.
+
+Initial recording physically passed and durably saved, but **process exit 134**:
+Replicator camera destruction hit a stale weak-reference callback in Sim 5.1.
+Fixed by strongly owning scene/env through teardown and destroying cameras while
+PhysX views still exist, before clearing callbacks. `il_camera_exit.log` model
+check exited 0. Later replay/model audits also exited normally. No upstream
+package/driver changes. Camera capture costs 19.408 s in this initial recording;
+wall 282.278 s includes 175.803 s cold planning. Other GPU processes were active;
+this is not an isolated rendering benchmark.
+
+`--headless --stage full --replay datasets/raw_smoke/nominal_20261022T145014937559Z`
+produced `full_20261022T150147142022Z.json`, **exit 0, full success**, no expert
+feedback, no planner and no physical state copying. Independent completion at
+144.85 simulated seconds; zero collisions, peak speed 2.15485 rad/s, effort
+1.35452 N m, stable slip .214/.418 mm. It holds the last actual target for up to
+three seconds if terminal dwell needs it; this run completed before the original
+expert stopped logging. Replay confirms action semantics; it is not learned
+policy performance or a disturbance/generalization claim.
+
+The initial camera RGB was valid but pose metadata buffers were all zeros:
+CameraCfg defaults to not updating poses after set_world_poses_from_view.
+Enabled supported `update_latest_camera_pose=True`, verified actual eye and unit
+quaternion before recording, and now reject invalid camera calibration in raw
+validation. `model_20261022T150815933446Z.json`, `il_camera_metadata.log`, exit 0,
+contains measured calibration. Thus the FIRST raw/converted smoke remains an
+explicit diagnostic artifact and fails the new strict calibration validator;
+do not quietly treat its stale extrinsics as production measurements.
+
+Two 224-square views: overview (0,-.12,.92)->(0,-.12,.04) m; front
+(0,.72,.56)->(0,-.14,.12) m; focal length 18 mm, aperture 20.955 mm,
+clipping .01–10 m. RGB-only capture renders before advancing physics and reads
+fresh buffers with update_period=0; scheduled capture is 20 Hz. Measured focal
+pixels 192.4123, principal point (112,112). Both images visually inspected.
+Using separately measured calibration, 15 visible-view samples over eight
+recording indices projected measured cube centres within .521–4.194 px of red
+pixel centroids (`il_camera_projection.json`), with visibility/occlusion bias.
+This supports geometry/time association; it is not a sub-tick latency certificate.
+Front resolves the cube when the overhead view is occluded by the hand.
+
+### Distribution diagnostics (all failures counted)
+
+Initial preselected four draws from X±10 mm, Y±7 mm, yaw±6 degrees:
+`full_20261022T150333657825Z.json`, `il_coverage4.log`, exit 1: **2/4 full successes**.
+train_000 and train_002 rejected pre-grasp; train_001 (yaw +4.56665 degrees,
+y +6.329 mm) and train_003 (x -3.3775 mm, yaw +.96305 degrees) physically passed.
+Repeated after IK continuation/camera repair:
+`full_20261022T151441433258Z.json`, `il_coverage4_seeded.log`, **2/4**, exit 1.
+Actual successful raw records in `datasets/raw_production_train`: 2,958 + 2,900
+frames = **5,858 frames / 292.9 simulated seconds**. Both failed attempts have
+metadata and zero action frames; never hidden or added to training. These are
+interim uncommitted-source diagnostic runs, not final source-frozen coverage.
+Early classification reported these as reset_prerequisite because the guard
+ran after reset; final code explicitly labels the no-approach phase plan_pickup,
+so these are correctly expert planning failures, not bad reset realizations.
+
+Nominal IK continuation finds pre/grasp candidates for the previously missed
+initialization, but the near-limit pregrasp intersects the cube. New regression
+requires retaining that collision rejection. Trials of 30/25 mm pre-height had
+clear endpoints and rejected HOME paths: no endpoint-only PASS was introduced.
+Forty random poses in each original/inward range had IK candidates (not paths);
+12 new inward draws all passed full approach geometry in `il_inward_geometry.log`.
+Candidate v2 range X±10 mm, Y offsets -12 to -4 mm, yaw±6 degrees; distinct
+32 train / 8 validation / 30 held-out configurations seeded 811/812/813. These
+are fixed BEFORE outcomes. Full physical v2 coverage still pending at this entry.
+Original outward failures remain reported; no generic robustness claim.
+
+Receiver -1 degree still fails before receiver motion. Two new actual attempts:
+`full_20261022T150440088313Z.json` (60 Hz) and
+`full_20261022T151426995650Z.json` (20 Hz), both exit 1 / planning_rejection.
+Offline free-roll 40 mm pregrasp cleared one saved 60 Hz geometry, but had only
+1.647 degrees joint reserve; 35 mm retained reserve and hit the cube on travel.
+A -5 degree pregrasp pitch cleared that old geometry, but failed the distinct
+actual 20 Hz held pose. Cube-symmetry flip lacked IK; four existing alternative
+handover candidates had safe carried travel but no receiver route in the bounded
+offline check. No unsafe route was executed and these experimental receiver
+rewrites were removed. Preserve the original receiver planner. Next diagnostic
+would need a genuinely different checked transit path; do not keep retrying the
+same local interpolation or relax contact margins to call this fixed.
+
+### Isolated training stack and actual model smoke results
+
+User explicitly authorized the separate environment. Created
+`/home/rynem8/miniforge3/envs/so101-il-py312`, Python **3.12.15**. Exact installed
+package versions are `configs/il_requirements.lock.txt`. Direct pins:
+LeRobot 0.6.1, numpy 2.2.6, torch 2.7.1+cu128, torchvision .22.1+cu128,
+torchcodec .5.0, av 15.1.0. Official release pyproject requires Python>=3.12 and
+NumPy>=2, incompatible with the locked simulator environment. No changes to
+leisaac-sim/Isaac/NVIDIA/system configuration. Initial PyPI torch chose cu126;
+corrected ONLY the new env to official cu128 wheels for sm_120. `pip check`
+passed; actual CUDA 512x512 matrix product and ACT/Diffusion imports passed on
+RTX 5090 (12,0). Setup logs in /tmp/so101_il_{environment,install,cuda128}.log.
+
+Local conversion uses official LeRobotDataset.create/add_frame/save_episode/
+finalize with image features, not a guessed parquet format. Raw validation runs
+first; v3 reader reopens and verifies shape. The first conversion initially
+failed on the restricted default HF cache after durable data creation; moving
+HF_HOME/TORCH_HOME to ignored workspace outputs fixed reader verification.
+`datasets/lerobot_smoke`: one episode, 2,953 frames, codebase_version v3.0.
+`datasets/lerobot_initial_train`: two calibrated episodes, 5,858 frames, v3.0,
+`il_convert_initial_train.log` exit 0. No data/model upload. New converter refuses
+mixed partitions and counts incomplete attempts explicitly. Validation/test
+must be separate dataset roots so their normalization statistics cannot leak.
+
+Official model classes, not custom transformer/U-Net code. `policy_pipeline.py`
+uses official saved pre/post processors for normalization/unnormalization. ACT
+width256, 8 heads, 4 encoder/1 decoder, 40-step predicted chunk /20 executed.
+Diffusion two observations, horizon32 /16 executed, U-Net (128,256,512), DDIM10.
+Local diagnostic training: AdamW lr1e-4, weight_decay1e-4, clip norm10, constant
+LR (not a claim to reproduce a published optimized recipe); seed701, batch16.
+Longer runs save model/processor checkpoints every500; final optimizer/Torch RNG
+saved for diagnosis, CLI resume is not implemented.
+
+Commands in separate training environment (outputs immutable on rerun):
+
+```bash
+python scripts/policy_pipeline.py train --dataset datasets/lerobot_smoke --output checkpoints/act_smoke --steps 20 --no-pretrained --log-every 5
+python scripts/policy_pipeline.py train --dataset datasets/lerobot_smoke --output checkpoints/diffusion_smoke --method diffusion --steps 20 --no-pretrained --log-every 5
+```
+
+Both exited0, gradients finite, weights/processors saved, valid12-radian targets
+produced. ACT loss81.9431->6.0602, 7.878s training; Diffusion1.1264->1.0073,
+7.543s. NOT task successes. Servers load checkpoints in Python3.12 and exchange
+only allowlisted RGB bytes and24 scalar joint state over private local Unix
+sockets. Lists/bytes avoid NumPy1/2 pickle coupling. Original Python3.11 env
+holds targets for3ticks and evaluates every physics tick, with no hidden oracle.
+
+Actual ACT smoke evaluation `full_20261022T145946086701Z.json`, exit1:
+**0/1, no stages, timeout at300s**, 6,000 inference requests. Mean/p95/max model
+latency .834/3.750/162.492 ms; most requests reuse the action chunk. Round trip
+.942/3.841/162.680ms. Zero contact collisions; speed/effort touched authored limits.
+Actual Diffusion smoke `full_20261022T150741124656Z.json`, exit1: **0/1**, actuator
+limit at .05s, two collision violations; first inference191.373ms. Too few/poorly
+trained models to rank methods, and no 30-trial held-out comparison yet. Inference
+pauses simulated time; 20 Hz interface does NOT imply all queries meet50ms wall.
+
+A longer two-demonstration ACT diagnostic completed 1,000 updates:
+`checkpoints/act_initial_2ep_1000/pretrained_model`, checkpoints also at500/1000,
+`il_act_initial_1000.log`: loss79.6424->.216413, 389.845s training; ImageNet
+ResNet18 weights44.7MB downloaded only to ignored outputs/torch from official
+PyTorch. Actual policy evaluation pending at this entry; loss is not success.
+
+Source-frozen runs now guard reset/planning against live edits so an old loaded
+planner cannot tag a plan with a new on-disk source fingerprint. Reports and
+recordings share a process-start source-hash snapshot. Initial raw diagnostic
+runs preceded this guard; retain their process reports, do not overstate exact
+intermediate-source reproducibility. New physical generation must start AFTER
+committing and leave controller/model/recorder files frozen until completion.
+
+CPU pipeline regression: **28/28**, 38.556s (`il_pipeline_tests_sourceguard.log`),
+including complete 2,177 LP comparisons /4,215 path samples, source/cache guard,
+IK+collision rejection, independent evaluator and dataset contracts. Follow-up
+actual-file interruption/terminal tests 3/3 (`il_record_interruption_tests.log`).
+Subsequent changes only add attempt checkpoints/provenance and correct failure
+phase labeling; final source-frozen physical runs must audit these as well.
+
+Removed exactly the three authorized, unused probes after inspection. Tracked
+workspace probes remain recoverable at e887eb1 /baseline05a0c13; no active imports.
+SHA256 before removal: probe_workspace632949f3063905cb4e27178d47cdbb66ed9b9d41c900b0d62230507f8737a52c;
+probe_coordinated_workspace acfa94f274bd554486cd6983674819460a0375e1411e8ce19d3ed0c924e0b316;
+untracked failed calibrator0e907cdc8b72a3ef43c678f43d3bdd556c1d1ea825c7edd4342d9f62aae7a3fc.
+Failed collider discovery was superseded by the independent triangle audit and
+contained no uniquely valuable uncommitted work. No other tracked files deleted.
+
+Motion GUI numeric regression: `full_20261022T144603146927Z.json` passed,
+227.281s total /218.024episode wall,150.65simseconds; rendering153.499s,
+physics37.852s; old406.387wall/209.17sim run included artificial pacing and longer
+motion. New recording overlapped part of the GUI run, so not an isolated matched
+GUI speed ratio. Sample simultaneous workload GPU92% /18,691MiB /220.63W;
+process average CPU at one sample GUI158%, ACTsim209%, server35%; this measures
+concurrent aggregate activity, not planner GPU acceleration. Human continuous
+motion visual checkpoint remains pending; completed reference GUI is left open.
+
+Incomplete: substantial source-frozen data, broad expert coverage/receiver fix,
+ACT/Diffusion manipulation success and held-out rates, optional cuRobo experiment,
+30-attempt statistics/comparison and professional comparison demo. Do not publish
+smoke failures or declining loss as a successful learned portfolio benchmark.
+
+
+Final pre-collection source check: `il_pipeline_commit_tests.log`, 28/28 in
+37.969s, exit0, plus py_compile and diff whitespace/credential-pattern review.
+Remote feature SHA rechecked through connected GitHub read API:
+`4c6a9d3c6d5751f7978ae07a43adf5fe9b726fb4`; terminal push still lacks credentials.
+
+### Optional cuRobo compatibility audit (source research only)
+
+[Isaac Lab **2.3.0** SkillGen instructions](https://isaac-sim.github.io/IsaacLab/v2.3.0/source/overview/imitation-learning/skillgen.html)
+specify commit ebb71702f3f70e767f40fd8e050674af0288abe8 and CUDA12.8; the example
+architecture flag is 8.0 and must match the device. Do not follow newer develop
+instructions that target a different CUDA stack. The [pinned setup.py](https://raw.githubusercontent.com/NVlabs/curobo/ebb71702f3f70e767f40fd8e050674af0288abe8/setup.py)
+compiles custom CUDA extensions and supplies no register-cap option by default.
+An [open Blackwell report on cuRobo's own tracker](https://github.com/NVlabs/curobo/issues/716)
+describes L-BFGS launch resource exhaustion on RTX5090/torch2.7+cu128, including
+a register-limit workaround. This is a report for v0.7.6, not proof that our
+exact pinned commit fails. No cuRobo install, kernel test, SO101 configuration,
+FK agreement or timing measurement has been performed. Retain CPU planner;
+separate-environment runtime experiment remains incomplete and must not block
+recording/training or modify the working simulator. No unsupported-hardware or
+GPU-speedup claim follows from this source audit.
