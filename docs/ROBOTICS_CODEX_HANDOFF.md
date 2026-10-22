@@ -1633,3 +1633,53 @@ unchanged. Full 32/8/30 collection/evaluation, successful learned manipulation,
 statistical comparisons, cuRobo runtime work and a publishable comparison demo
 remain unfinished. Any future work should begin with the saved input/target
 traces and separate validation cases; no further work is running at handoff.
+
+### Documentation correction and camera review — 22 October 2026
+
+At the user's request, further training and visual simulator work remain stopped
+and under the user's control. The user reported poor dataset images and asked
+for clear procedures, exact demonstration provenance, policy rationale, camera
+choice, environment explanations and a GitHub-reviewable source record. They
+explicitly requested that datasets and weights NOT be uploaded.
+
+README now serves as the user procedure and complete source inventory.
+`docs/POLICY_REVIEW.md` explains the implementation, exact four-demo and earlier
+training cohorts, fixed cameras rather than wrist cameras, action/observation
+semantics and limitations of the custom training loop. The former README is
+preserved at commit d1cb3be; no extra copy of the old experiment log was created.
+`docs/POLICY_REVIEW_METADATA.json` contains a review snapshot of actual saved
+configs/processors, training arguments, dataset statistics, conversion provenance,
+source and checkpoint hashes. It is documentation metadata, not a runnable
+trainer configuration, dataset, weight file or raw experiment log.
+
+Read-only inspection of `train_v2_000_20261022T171242694160Z` frames 000000 and
+001500 in both overview/front found poor initial cube visibility/detail and
+partial hand occlusion during transfer. The initial front-view cube is roughly
+ten pixels across; it is not clearly visible in the initial overview sample.
+These four samples support the user's concern but do not isolate the sole cause
+of learned failure. Prior nonblank/shape/timestamp checks did not establish
+visual suitability, and main-viewport approval did not validate the policy views.
+No wrist-camera design or comparative camera study was implemented.
+
+Documentation explicitly distinguishes the official LeRobot model classes from
+the custom trainer. Static source inspection showed ACT's backbone retains its
+1e-5 parameter-group rate while other parameters use CLI 1e-4; Diffusion's saved
+optimizer/scheduler defaults are not used by the custom AdamW loop. Its saved
+`drop_n_last_frames=15` is not applied by an episode-aware sampler, and its padding
+loss mask is disabled. These are review findings, not fixes or proven failure
+causes. There is no validation loop or best-checkpoint selection.
+
+All seven four-demo recorded source hashes matched Git revision c1d8336, and
+that revision's policy_pipeline.py hash matched both latest training reports.
+No task simulation/training/inference process was found in this workspace during
+the read-only audit. Only documentation and review metadata were changed; no
+experiment, training, dependency installation or simulator run was started.
+
+Documentation verification: 41 local links/anchors resolved; 12 Bash blocks
+passed `bash -n` without executing their commands; 11 documented Python command
+lines matched source-declared flags; all 18 inventoried source/config/test hashes
+matched the review snapshot. Both saved model configs and training arguments
+matched their local originals, the four-demo frame sum was 11,986, and every
+tracked source/config/test file appeared in the README inventory. `git diff
+--check` passed. No runtime regression or learned-policy test was rerun for this
+documentation-only change.
