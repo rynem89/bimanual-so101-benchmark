@@ -1519,3 +1519,117 @@ Independent raw/v3 preservation check:12 samples (start/middle/end of each of
 four episodes), exact float32 state and actions, ZERO RGB byte error in BOTH
 views after official reader decoding, timestamps within1e-5s,11,986 totalframes.
 `il_v3_raw_alignment.json` /log, exit0. No privileged features in the dataset.
+
+### User-requested stop and inference handoff — 22 October 2026
+
+The user requested that experiments stop, documentation be updated and the feature
+branch be pushed so they can diagnose inference themselves. All five remaining
+task-owned processes were stopped: two expert batches, the ACT evaluation and
+both policy servers. Training and recording had already finished. No new training
+or simulator run was launched after the request. Stop evidence is preserved in
+`outputs/controller/user_requested_stop.json`; the audit of saved reports,
+recordings and training metadata is `outputs/controller/user_stop_audit.json`.
+Generated evidence, datasets and weights remain local and ignored by Git.
+
+Latest corrected data and expert results (earlier failed cohorts remain above):
+
+| Cohort | Completed evidence | Local report directory under `outputs/controller/` |
+| --- | --- | --- |
+| Training cases 000–003 | 4/4 full successes, 11,986 frames | `corrected_train` |
+| Training cases 004–005 | 2/2 full successes; larger batch stopped at a saved boundary | `corrected_train_next8` |
+| Training cases 006–011 | 6/6 full successes | `corrected_train_remaining6` |
+| Validation cases 000–001 | 2/2 full successes, 6,050 frames | `corrected_validation2` |
+| Held-out cases 000–001 | 2/2 full successes; larger batch stopped at a saved boundary | `corrected_heldout4` |
+| Held-out cases 002–003 | 2/2 full successes | `corrected_heldout_remaining2` |
+| Held-out cases 004–008 | 5/5 full successes; case 009 interrupted at user stop | `expert_heldout_004_016` |
+| Held-out cases 017–021 | 5/5 full successes; case 022 interrupted at user stop | `expert_heldout_017_029` |
+
+Twelve distinct training recordings passed strict raw schema 1.1 validation:
+**36,268 frames / 1,813.4 policy seconds** in `datasets/raw_train_v2_corrected`.
+Two separate validation recordings passed the same checks: **6,050 frames /
+302.5 seconds** in `datasets/raw_validation_v2_corrected`. Neither raw root has
+an incomplete episode directory. Only training cases 000–003 were converted to
+`datasets/lerobot_corrected_train4` and used for the current models and their
+normalization statistics. The remaining eight training recordings and both
+validation recordings were not used for those weights.
+
+The expert held-out total is **14 completed successes, zero completed failures,
+two interrupted attempts and fourteen unstarted cases**, out of thirty planned.
+This is not a completed thirty-case success rate. Cases 010–016 and 023–029 were
+not started. Original partial reports retain `in_progress`; their completed
+episode entries were not rewritten. New `user_stop.json` sidecars in both active
+expert directories identify the interrupted case and original report. Older
+boundary interruptions retain their existing `batch_interruption.json` sidecars.
+
+Both latest official LeRobot 0.6.1 models finished **4,000 updates**, seed 701,
+batch 16, two loader workers, AdamW learning rate 1e-4 and gradient clipping 10,
+using the same four demonstrations / 11,986 frames:
+
+| Model | Local checkpoint root | Parameters | Training wall seconds | First → last loss |
+| --- | --- | ---: | ---: | --- |
+| ACT | `checkpoints/act_corrected_train4_4000` | 18,725,388 | 1,507.8297 | 89.56226 → 0.0513568 |
+| Diffusion | `checkpoints/diffusion_corrected_train4_4000` | 40,901,452 | 1,474.0479 | 1.147505 → 0.0120214 |
+
+Inference loads each root's `pretrained_model` directory, including its saved
+official processors. Intermediate 500-update checkpoints and optimizer/RNG state
+remain available; the current CLI does not implement exact training resume.
+Losses have different definitions and are not a manipulation comparison.
+Training logs are `outputs/controller/il_act_corrected_train4_4000.log` and
+`il_diffusion_corrected_train4_4000.log`; each root contains `training.json`.
+`outputs/controller/user_stop_checkpoint_hashes.json` preserves file hashes.
+Final weight SHA-256 values:
+
+- ACT: `cb51e88ec754343ddeeee8c9564175fe33bd8941e5377932d5954c0feba8ef14`
+- Diffusion: `53a4cb096a11a655f5c719eff8c13e066a4cf207b49445048a7f02e69172643f`
+
+The latest learned-policy physics results are unsuccessful:
+
+- ACT: `act_corrected4_pilot_workers8/full_20261022T180832930960Z.json` records
+  **0/4 completed attempts**, all 300-s simulated timeouts without pickup
+  (nominal and held-out 000–002). Held-out 003 was interrupted at the user's
+  request; its `user_stop.json` sidecar preserves that distinction. The last
+  periodic log reached 4,801 policy steps with no task stages achieved.
+- Diffusion: `diffusion_corrected4_pilot/full_20261022T182249865879Z.json` records
+  **0/5**, with no pickup: nominal actuator limit at 0.85 s; held-out 000 left
+  jaw/table forbidden contact at 4.1667 s; held-out 001 actuator limit at
+  3.2167 s; held-out 002 right gripper/bin contact at 2.5167 s; held-out 003
+  right jaw/bin contact at 1.5333 s. These remain counted failures.
+
+An earlier ACT launch with one Kit worker stalled during startup, before reset
+or a policy action. It was terminated and recorded in `il_act_startup_failure.json`;
+it is an infrastructure failure, not an attempted manipulation. The eight-worker
+retry initialized and produced the four completed evaluations above. The README
+uses process-local `--cpu-threads 8`; no driver, dependency or OS setting changed.
+The first Diffusion nominal target differed from measured joints by up to
+0.22441566 rad. Installed official Diffusion observation/action indices were
+checked; no erroneous one-frame action-label shift was found. Recorded-target
+replay and raw/v3 byte preservation passed separately, as documented above;
+neither establishes learned-policy quality.
+
+The already-tested optional policy tracing change is retained for diagnosis:
+`serve --trace-dir ... --trace-images` writes reset seed, model/adapter hashes,
+24-value pre-action proprioception, requested 12-joint targets and actual RGB
+inputs. It never records evaluator labels or claims requested targets were
+applied. Traces are not demonstration episodes and omit terminal images. Model
+timing excludes trace I/O; client round-trip timing includes it. Camera names
+must match the model configuration and proprioception must be finite and shape 24.
+
+Actual-model trace integration passed before the stop:
+`outputs/controller/il_policy_trace_check.json` records two resets with seed
+812000, exactly equal actions, exact JSON states/targets and byte-identical PNG
+inputs. `il_trace_cli_guard.log` confirms `--trace-images` without `--trace-dir`
+exits 2. The traced Diffusion server also completed the five physics evaluations
+above. After stopping, only CLI help, Python compilation and diff checks were
+run; no additional experiment was started. The most recent geometry/evaluator/
+dataset regression remains **34/34 passed in 72.781 s** in
+`il_donor_float32_fixed_tests.log`.
+
+README section **View the trained models in Isaac Sim** gives complete two-shell
+activation, checkpoint/socket commands for ACT and Diffusion, GUI defaults,
+expected failures, report/trace paths and shutdown instructions. Source push
+does not upload ignored weights, recordings or logs; run inference in this
+existing workspace. The pinned simulator environment and NVIDIA driver are
+unchanged. Full 32/8/30 collection/evaluation, successful learned manipulation,
+statistical comparisons, cuRobo runtime work and a publishable comparison demo
+remain unfinished. Any future work should begin with the saved input/target
+traces and separate validation cases; no further work is running at handoff.

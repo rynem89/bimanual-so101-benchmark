@@ -23,6 +23,40 @@ RRT transit and measured donor-clearance move, including the 20 Hz recording run
 Repeated identical starts establish
 repeatability, not general robustness or real-robot success.
 
+## Stopped handoff — 22 October 2026
+
+All task-owned simulation, training and inference processes were stopped at the
+user's request. Checkpoints, recordings, partial runs and logs remain local.
+Use [the inference instructions below](#view-the-trained-models-in-isaac-sim)
+to inspect the trained models yourself; GUI is the default.
+
+| Latest corrected cohort | Saved result at stop |
+| --- | --- |
+| Expert training recordings | **12/12 full successes**, 36,268 validated frames; `datasets/raw_train_v2_corrected` |
+| Expert validation recordings | **2/2 full successes**, 6,050 validated frames; `datasets/raw_validation_v2_corrected` |
+| Expert held-out evaluation | **14 verified successes**, zero completed failures; 2 interrupted and 14 unstarted out of 30 planned |
+| ACT, four demonstrations, 4,000 updates | **0/4 completed**, all 300 s timeouts without pickup; fifth attempt interrupted |
+| Diffusion, same demonstrations/updates | **0/5**, actuator-limit or forbidden-contact failures; no pickup |
+
+**Both latest models were trained on only four demonstrations / 11,986 frames**
+in `datasets/lerobot_corrected_train4`, not all twelve now recorded. The additional
+eight training episodes and two validation episodes were not used for these
+weights or normalization statistics. The complete 32/8/30 benchmark remains
+unfinished. Interrupted attempts have no completed success/failure outcome;
+the expert's 14 successes are not a completed 30-trial success rate. Earlier
+failed cohorts remain recorded separately in the handoff.
+
+| Model | Existing local checkpoint | Training evidence |
+| --- | --- | --- |
+| ACT | `checkpoints/act_corrected_train4_4000/pretrained_model` | 18,725,388 parameters; 1,507.83 s; loss 89.5623 → 0.05136 |
+| Diffusion | `checkpoints/diffusion_corrected_train4_4000/pretrained_model` | 40,901,452 parameters; 1,474.05 s; noise loss 1.14750 → 0.01202 |
+
+Losses have different meanings and do not establish manipulation success.
+Checkpoints include saved official preprocessing/postprocessing and intermediate
+500-update snapshots. Optimizer/RNG state is retained for diagnosis; the CLI
+does not implement exact training resume. These files, datasets and logs are
+ignored by Git and **are not uploaded by a source-code push**.
+
 ## Run the simulator
 
 Use the existing environment in **every new shell**. Do not reinstall the stack.
@@ -332,12 +366,17 @@ stages and zero collision violations. Raw schema 1.1 validation and official v3.
 conversion passed: **11,986 frames**, 599.3 s, in `datasets/lerobot_corrected_train4`.
 The fourth reset starts at global physics tick 27,827 and retains exact 20 Hz
 alignment. This is still a small prefix, not validation of the whole distribution.
+Collection subsequently reached twelve successful training and two successful
+validation recordings; the frozen converted/trained dataset remains four episodes.
 The manifest fixes 32 training, 8 validation and 30 held-out cases with separate
 seeds. A geometric pass is not a manipulation success; all physical failures
 must remain in the denominator. The fixed nominal and −1° regressions remain
 separate. The former −1° donor-withdrawal failure now has a verified recovery.
 
-Use separate shells/environments:
+The following collection/training commands are examples for subsequent work;
+they do not describe the existing model checkpoints. To inspect existing weights,
+use the inference section below. Choose fresh output directories for new datasets
+and training runs.
 
 ```bash
 # Original simulator environment; GUI remains the default.
@@ -391,6 +430,101 @@ Official pinned sources: [LeRobot v0.6.1](https://github.com/huggingface/lerobot
 [Diffusion](https://github.com/huggingface/lerobot/tree/v0.6.1/src/lerobot/policies/diffusion),
 [Isaac Lab 2.3 cameras](https://isaac-sim.github.io/IsaacLab/v2.3.0/source/overview/core-concepts/sensors/camera.html).
 
+## View the trained models in Isaac Sim
+
+Use **two terminals**, and run one model at a time. Terminal 1 runs the neural
+network in Python 3.12; Terminal 2 runs the original simulator in Python 3.11.
+Repeat the relevant activation block whenever you open a new shell. No training,
+installation or dataset conversion is needed to run the existing checkpoints.
+
+### Terminal 1: start the model server
+
+For ACT, copy this complete block and wait for `[READY]`:
+
+```bash
+cd /home/rynem8/robotics/bimanual-so101-benchmark
+source /home/rynem8/miniforge3/etc/profile.d/conda.sh
+conda activate so101-il-py312
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+python scripts/policy_pipeline.py serve --method act \
+  --checkpoint checkpoints/act_corrected_train4_4000/pretrained_model \
+  --socket /tmp/so101_manual_act.sock \
+  --trace-dir outputs/policy_traces/manual_act --trace-images
+```
+
+For Diffusion, stop ACT first with Ctrl+C. In the same activated training terminal,
+run this **instead** (repeat the activation block above if using a new shell):
+
+```bash
+python scripts/policy_pipeline.py serve --method diffusion \
+  --checkpoint checkpoints/diffusion_corrected_train4_4000/pretrained_model \
+  --socket /tmp/so101_manual_diffusion.sock \
+  --trace-dir outputs/policy_traces/manual_diffusion --trace-images
+```
+
+The terminal stays occupied while serving. `[READY]` means weights and saved
+normalizers loaded; it does not mean the robot task succeeded. Optional tracing
+saves the 24-value input state, requested 12-joint targets and both RGB inputs
+under a new seed-specific directory on each reset. These are pre-action inputs,
+not proof of applied commands or a terminal image. Tracing adds I/O to round-trip
+latency. Omit both trace options if you only want playback.
+
+### Terminal 2: open the simulator and run inference
+
+For ACT, copy this complete block **after its server reports `[READY]`**:
+
+```bash
+cd /home/rynem8/robotics/bimanual-so101-benchmark
+source /home/rynem8/miniforge3/etc/profile.d/conda.sh
+conda activate leisaac-sim
+export LEISAAC_ASSETS_ROOT=/home/rynem8/robotics/leisaac/assets
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+python scripts/run_manipulation.py --cpu-threads 8 --stage full \
+  --policy-socket /tmp/so101_manual_act.sock --case nominal \
+  --output-dir outputs/controller/manual_act_inference
+```
+
+For Diffusion, stop/close the previous simulator, start its matching server in
+Terminal 1, then run this **instead** in the activated simulation terminal:
+
+```bash
+python scripts/run_manipulation.py --cpu-threads 8 --stage full \
+  --policy-socket /tmp/so101_manual_diffusion.sock --case nominal \
+  --output-dir outputs/controller/manual_diffusion_inference
+```
+
+There is deliberately no `--headless` in these commands. Camera observations are
+enabled automatically. Eight process-local Kit workers avoid the one-worker
+startup stall observed under concurrent Kit load; numerical threads remain one.
+The successful retry used eight workers without changing physics criteria.
+The model receives only RGB/proprioception and controls both arms at 20 Hz;
+it does not invoke expert IK, grasp feedback or collision planning.
+
+**Expected behavior for these diagnostic checkpoints:** ACT can stall without
+picking up and run until the 300-s simulated timeout. Diffusion currently triggers
+safety failures within seconds. A failed evaluation exits 1 and may close the
+window immediately; read the terminal and saved JSON rather than interpreting
+the closed window as successful completion. A successful GUI evaluation stays
+open at `[VIEWER]`. Use Ctrl+C in both terminals when finished. Starting the
+expert command in the first section runs the working geometric controller,
+not a trained model.
+
+Replace `--case nominal` with
+`--cases-file configs/task_distribution.json --split validation` to run all eight
+predeclared validation cases; use `--split heldout` for all thirty held-out cases.
+These are longer runs. Only two validation cases and fourteen held-out cases have
+completed expert checks so far. Nominal lies outside the inward Y-offset training
+strip; its result must be distinguished from in-range held-out performance.
+
+Inspect `outputs/controller/manual_act_inference/full_*.json` or
+`outputs/controller/manual_diffusion_inference/full_*.json` for stage flags,
+failure category, measured limits, checkpoint identity, reset seed and inference
+latency. Actual model input PNGs and `actions.jsonl` are under
+`outputs/policy_traces/manual_act/seed_*` or `manual_diffusion/seed_*`.
+Keep the final `[RESULT]` and JSON when reporting a problem. If a socket is still
+owned by another server, stop that server or choose a new matching socket path
+in both terminals; the server refuses to overwrite it.
+
 ## File inventory
 
 All commands below assume the activated environment; offline commands also need
@@ -411,7 +545,7 @@ the bundled USD paths above. Imported modules have no separate run command.
 | `scripts/verify_motion_gripper_reset.py` | Preserved independent motion/jaw/reset regression; run as simulator script. |
 | `scripts/inspect_bimanual_scene.py`, `scripts/inspect_fk_frames.py` | Historical simulator scene/frame diagnostics; standalone scripts, preserved. |
 | `scripts/dataset_io.py` | Versioned raw demonstration writer/validator; measured frames + actual held targets + RGB → NPZ/PNG/JSON. Imported; no Kit/LeRobot dependency. |
-| `scripts/policy_pipeline.py` | Isolated LeRobot v0.6.1 `convert`, `train`, `serve`; raw episodes → v3 images/parquet → official checkpoint → Unix-socket actions. |
+| `scripts/policy_pipeline.py` | Isolated LeRobot v0.6.1 `convert`, `train`, `serve`; raw episodes → v3 images/parquet → official checkpoint → Unix-socket actions. Optional `--trace-dir` / `--trace-images` records policy inputs for diagnosis. |
 | `configs/task_distribution.json` | Seeded candidate train/validation/held-out poses, disjoint configurations; physical coverage must be reported. |
 | `configs/il_requirements.lock.txt` | Exact installed Python 3.12 training packages; never install into the simulation environment. |
 | `tests/test_dataset.py` | Actual-file chronology, held targets, RGB presence, privilege isolation and terminal-transition validation. |

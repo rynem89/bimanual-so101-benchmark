@@ -166,7 +166,11 @@ def serve(args):
     torch.backends.cudnn.deterministic=True;torch.backends.cudnn.benchmark=False
     metadata=dict(checkpoint=str(args.checkpoint.resolve()),method=args.method,
                   weights_sha256=hashlib.sha256((args.checkpoint/'model.safetensors').read_bytes()).hexdigest(),
-                  adapter_sha256=SCRIPT_SHA256,torch=torch.__version__,lerobot='0.6.1')
+                  adapter_sha256=SCRIPT_SHA256,torch=torch.__version__,lerobot='0.6.1',
+                  input_trace=bool(args.trace_dir),trace_images=args.trace_images)
+    cameras={key.removeprefix('observation.images.') for key in policy.config.input_features
+             if key.startswith('observation.images.')}
+    trace=None;trace_root=None;trace_index=0
     os.umask(0o077)
     if args.socket.exists():raise FileExistsError('Refuse to overwrite an existing socket')
     try:
@@ -179,18 +183,42 @@ def serve(args):
                         except EOFError:break
                         if request['command']=='reset':
                             seed=int(request.get('seed',701));torch.manual_seed(seed);np.random.seed(seed%2**32);random.seed(seed)
-                            policy.reset();connection.send(dict(ok=True,protocol='so101-policy-1.0',seed=seed,policy_metadata=metadata));continue
+                            policy.reset()
+                            if trace:trace.close()
+                            trace=None;trace_index=0
+                            if args.trace_dir:
+                                trace_root=args.trace_dir/f'seed_{seed}_{time.time_ns()}'
+                                trace_root.mkdir(parents=True,exist_ok=False)
+                                (trace_root/'input_trace.json').write_text(json.dumps(dict(schema='so101-policy-input-trace-1.0',
+                                    seed=seed,policy_metadata=metadata,joint_order=JOINT_ORDER,
+                                    note='Pre-action inputs and requested targets only; no applied-target proof, terminal image or evaluator labels. Not demonstration data.'),indent=2))
+                                trace=(trace_root/'actions.jsonl').open('w')
+                                if args.trace_images:
+                                    for camera in cameras:(trace_root/camera).mkdir()
+                            connection.send(dict(ok=True,protocol='so101-policy-1.0',seed=seed,policy_metadata=metadata));continue
                         if request['command']=='close':connection.send({'ok':True});return
                         if request['command']!='action':raise ValueError('Unknown inference command')
                         started=time.perf_counter()
                         # Allowlist prevents accidental object/contact/phase labels.
+                        if set(request['images'])!=cameras or np.shape(request['state'])!=(24,) or not np.isfinite(request['state']).all():
+                            raise ValueError('Expected calibrated RGB cameras and finite 24-value proprioception')
                         observation={'observation.state':torch.tensor(request['state'],dtype=torch.float32)}
                         observation.update({f'observation.images.{key}':torch.from_numpy(np.frombuffer(value,dtype=np.uint8).reshape(224,224,3).copy()).permute(2,0,1).float()/255
                                             for key,value in request['images'].items()})
                         with torch.inference_mode():action=post(policy.select_action(pre(observation))).squeeze(0).cpu().numpy()
                         if action.shape!=(12,) or not np.isfinite(action).all():raise RuntimeError('Invalid policy action')
-                        connection.send(dict(action=action.tolist(),inference_wall_s=time.perf_counter()-started))
+                        model_s=time.perf_counter()-started
+                        if trace:
+                            trace.write(json.dumps(dict(policy_step=trace_index,state=request['state'],
+                                target_rad=action.tolist(),model_s=model_s),allow_nan=False)+'\n');trace.flush()
+                            if args.trace_images:
+                                from PIL import Image
+                                for camera,pixels in request['images'].items():
+                                    Image.fromarray(np.frombuffer(pixels,dtype=np.uint8).reshape(224,224,3)).save(trace_root/camera/f'{trace_index:06d}.png')
+                            trace_index+=1
+                        connection.send(dict(action=action.tolist(),inference_wall_s=model_s))
     finally:
+        if trace:trace.close()
         if args.socket.exists():args.socket.unlink()
 
 
@@ -206,8 +234,12 @@ def main():
     p.set_defaults(function=train)
     p=commands.add_parser('serve');p.add_argument('--checkpoint',type=Path,required=True)
     p.add_argument('--method',choices=('act','diffusion'),default='act');p.add_argument('--socket',type=Path,required=True)
+    p.add_argument('--trace-dir',type=Path,help='Optional ignored output directory for pre-action proprioception/targets')
+    p.add_argument('--trace-images',action='store_true',help='Also save the RGB policy inputs for diagnostic video')
     p.set_defaults(function=serve)
-    args=parser.parse_args();args.function(args)
+    args=parser.parse_args()
+    if getattr(args,'trace_images',False) and not args.trace_dir:parser.error('--trace-images requires --trace-dir')
+    args.function(args)
 
 
 if __name__=='__main__':main()
