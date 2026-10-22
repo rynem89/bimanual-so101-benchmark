@@ -126,7 +126,8 @@ class ModelTests(unittest.TestCase):
         local=np.array([[.0085353368,.9952957157,.0965069234,-.0012996518],
                         [.9999025491,-.0095611827,.0101723185,.0009427735],
                         [.0110471854,.0964106946,-.9952803312,-.0017849291],[0,0,0,1]])
-        result=plan_placement(self.model,left,right,local,continuous=True)
+        # Simulator joint observations are float32, unlike JSON-loaded probes.
+        result=plan_placement(self.model,left.astype(np.float32),right.astype(np.float32),local,continuous=True)
         self.assertIsNotNone(result['selected'])
         selected=result['selected'];departure=selected['left_departure']
         self.assertEqual(departure['kind'],'joint_transit')

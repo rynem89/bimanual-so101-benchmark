@@ -1475,3 +1475,28 @@ il_donor_fallback_tests.log, including full saved-pose donor/loaded-bin geometry
 regression. `git diff --check` passed. Four-case dataset conversion exited0,
 reader verified4episodes/11,986frames/v3.0 in datasets/lerobot_corrected_train4,
 il_corrected_train4_conversion.log. No validation/test statistics were used.
+
+Physical fallback attempt ef2d476 stopped SAFELY before withdrawal:
+`corrected_yaw_fallback/full_20261022T173702154236Z.json`, exit1,
+`Transit jaw must stay fixed`, controller_guard during plan_placement. Pickup,
+lift and independent handover true; zero collisions. Simulator q arrays are
+float32; assigning pi/4 into a copied float32 vector rounded it relative to the
+float64 HOME jaw. The original JSON/offline fixture was float64 and missed this.
+The saved-pose unit changed to actual float32 inputs reproduced the SAME error
+in8.797s (`il_donor_float32_before.log`). Fixed only the fallback caller's array
+dtype before assigning the exact jaw target; strict fixed-jaw guard unchanged.
+Full34 tests passed72.781s (`il_donor_float32_fixed_tests.log`), diff check clean.
+
+To avoid changing frozen source during generation, task-owned batches were
+interrupted ONLY immediately after EPISODE markers and saved results: first two
+heldout_v2_000/001 independently full success (sourceef2d476), and additional
+train_v2_004/005 full successes. Batch requested4/8 but completed2/2; remaining
+cases were NOT attempted and must be resumed explicitly. Interruption sidecars
+preserved; exit0 through Kit SIGINT handling is NOT proof all requested cases ran.
+Six validated training files now total18,118frames; the frozen four-episode
+LeRobot dataset used for current training is unchanged at11,986frames.
+
+Current-schema recorded-target replay, with NO expert plans or contact servo:
+`corrected_replay/full_20261022T173946110719Z.json`, exit0, all independent stages
+true, full success150.35s, zero collisions, speed2.0110rad/s, effort1.34962Nm.
+This verifies action semantics through real physics; no recorded states copied.

@@ -520,7 +520,7 @@ def plan_placement(model, left_q, right_q, cube_in_right_tcp, continuous=False):
         # range even after the donor is clear. Reuse the checked open-hand
         # global transit; never spline its turns or exempt later cube contact.
         for pan_clearance in (-2.,-4.,2.,4.):
-            separated=left_q.copy();separated[0]+=np.deg2rad(pan_clearance)
+            separated=np.array(left_q,dtype=float,copy=True);separated[0]+=np.deg2rad(pan_clearance)
             separated[-1]=home[-1]  # Measured float32 jaw vs exact open target.
             if world.check(separated,margin=.001):continue
             separation=world.segment(left_q,separated,margin=.001,cube_contact=True)
