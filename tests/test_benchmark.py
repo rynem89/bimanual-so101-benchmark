@@ -84,6 +84,13 @@ class EvaluationTests(unittest.TestCase):
         f=frame();f.environment[:]=0
         with self.assertRaisesRegex(RuntimeError,'reset'):
             self.e.reset(f,np.array([-.34,-.04]))
+        # The reset gate must distinguish the actual 1 mm / 1 degree cases.
+        with self.assertRaisesRegex(RuntimeError,'reset'):
+            self.e.reset(frame((-.339,-.04,.02)),np.array([-.34,-.04]))
+        from scipy.spatial.transform import Rotation
+        f=frame();f.cube[3:7]=np.roll(Rotation.from_euler('z',1,degrees=True).as_quat(),1)
+        with self.assertRaisesRegex(RuntimeError,'reset'):
+            self.e.reset(f,np.array([-.34,-.04]))
 
     def test_timeout_and_reset_yaw_are_independent_of_controller(self):
         self.e=TaskEvaluator(np.tile([-np.pi,np.pi],(6,1)),[],TaskSpec(timeout_s=.05))

@@ -10,11 +10,17 @@ implemented.
 The original complete sequence passed **3/3 repeated physics episodes** at
 `9af7dc7`; the user visually confirmed it in Isaac Sim. The benchmark-hardening
 revision adds an independent evaluator, transfer instrumentation, faster
-collision rejection and fixed regression cases. **Staged receiver preload passed 3/3 complete independently evaluated episodes**
-with automatic reset and zero collision violations. Detailed measurements are
+collision rejection and fixed regression cases. **Staged receiver preload
+passed 3/3 complete independently evaluated episodes**, including a final run
+with strict reset verification,
+automatic reset and zero collision violations. The fixed perturbation suite
+passed **3/4 perturbed poses** (4/5 including nominal); −1° yaw was rejected
+before receiver motion. Both deliberate grasp/transfer omissions were detected
+with zero task successes. Detailed measurements are
 recorded in the [engineering handoff](docs/ROBOTICS_CODEX_HANDOFF.md#engineering-audit--benchmark-hardening-2026-10-22).
-Repeated identical starts establish repeatability, not general robustness or
-real-robot success.
+The new GUI replay passed numerical evaluation and remains open for inspection;
+human review of staged preload is pending. Repeated identical starts establish
+repeatability, not general robustness or real-robot success.
 
 ## Run the simulator
 
@@ -37,6 +43,9 @@ python scripts/run_manipulation.py --headless --stage full --handover-mode stage
 # Five fixed cube poses, each replanned and independently evaluated.
 python scripts/run_manipulation.py --headless --stage full --handover-mode staged --suite perturb
 
+# Audit actual reset poses and the 20 Hz interface for all five cases.
+python scripts/run_manipulation.py --headless --stage model --suite perturb
+
 # Deliberately omit donor/receiver closure; both failures must be detected.
 python scripts/run_manipulation.py --headless --stage full --handover-mode staged --suite negative
 ```
@@ -45,7 +54,8 @@ GUI is the default; `--headless` is an explicit per-run choice. Add `--exit-afte
 to close a GUI run automatically. CPU planning pauses physics while keeping the
 viewer rendering. `[PLAN DONE]` reports fresh planning duration; `[CACHE]`
 confirms checked-segment reuse. Preserve `outputs/controller/plans/` for warm
-runs. The first complete run must validate many paths and is slower.
+runs. Cold simulator startup measured about 5.3 s with existing local Kit/assets
+caches. The first complete run must validate many paths and is slower.
 
 | `--stage` | Evaluation stops after |
 | --- | --- |
@@ -62,6 +72,9 @@ runs. The first complete run must validate many paths and is slower.
 fixed case; `--suite perturb` runs all five. Seeds 101–105 and exact initial
 poses are in `benchmark_core.EVALUATION_CASES`. `--episodes` repeats each case.
 These are small diagnostic perturbations, not a sampled task distribution.
+The current full perturbation command exits 1 because the −1° yaw case has no
+validated receiver route; its failure is an expected documented limitation,
+not an allowed-contact or success-threshold exception.
 
 Each run writes `outputs/controller/simulation.json` checkpoints and a unique
 `full_<UTC timestamp>.json` (or the requested stage name). Full timestamped history persists at episode boundaries; the two-second
@@ -104,7 +117,8 @@ flags. It derives success from physics observations:
 - Forbidden contacts ≥0.05 N, sole-holder slip >5 mm / 10°, nonfinite states,
   joint/effort/speed violations or 300 s timeout fail the episode.
 
-Reset checks cube pose/orientation, velocities, arm HOME and measured cube
+Reset checks cube pose within 0.1 mm and orientation within 0.1°, velocities,
+arm HOME and measured cube
 weight before control. Direct joint/object state writes occur only in reset.
 There are no task-time cube teleports, attachment constraints or cube gravity
 cancellation. Bin placement currently releases the cube from above the basket
@@ -175,6 +189,8 @@ with the original LP; all intermediate poses remain validated.
 | LP calls on that approach | 1,958 | 0 (all separations proved) |
 | Final cold approach, **4,215 samples** with cache reserve | — | 13.03 s |
 | Final geometry-warm revalidation, no plan cache | — | 11.55 s |
+| Complete cold planning, historical / hardened task | ~548 s | ~134 s |
+| Warm headless episode, excluding planning | 94.17 s | 69.02 s |
 | Release cube / right-TCP dip, initial paired trial | 17.33 / 17.18 mm | 9.98 / 10.07 mm |
 | Pose convergence after release, initial paired trial | 1.85 s | 1.25 s |
 
@@ -182,6 +198,9 @@ These are local timing samples and initial paired transfer measurements, not
 universal performance claims. Final sampling is denser than the 3,794-sample
 comparison because cache tolerance now has an explicit motion reserve. Full
 nominal/perturbed results and cold/warm execution timings are in the handoff.
+The initial three-repeat checkpoint cost was 43.51 s; compact checkpoints cost
+4.15 s across the later five-case suite (different workloads, no matched
+speedup claim).
 PhysX reports a residual vertical velocity during grasp even when pose finite
 differences converge; reports preserve both and do not call it velocity-settled.
 
@@ -223,6 +242,6 @@ the bundled USD paths above. Imported modules have no separate run command.
 
 Known limits: task-specific local planning, single simulated scene/hardware,
 compliant transfer, authored/cooked geometry differences, no certified tracking
-tube, no real-robot trials. Future ACT, diffusion, RL and compact VLA comparisons
+tube or continuous-contact guarantee between physics ticks, no real-robot trials. Future ACT, diffusion, RL and compact VLA comparisons
 must share the evaluator, declare observations/action rate, use held-out scene
 conditions and report uncertainty. Training remains outside this assignment.

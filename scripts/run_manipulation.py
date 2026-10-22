@@ -1,6 +1,6 @@
 """Deterministic SO-101 manipulation evaluation in the existing task scene.
 
-Run: python scripts/run_manipulation.py --headless --stage approach --episodes 1
+Run: python scripts/run_manipulation.py --stage full --episodes 1
 Only episode reset writes object/joint state. Task motion uses actuator targets.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 PROCESS_STARTED=time.perf_counter()
 PLAN_TIMINGS=[]
-parser = argparse.ArgumentParser(add_help=False)
+parser = argparse.ArgumentParser(description=__doc__,add_help=False)
 parser.add_argument('--stage', choices=('model','approach','pickup','transport','handover','full'), default='approach')
 parser.add_argument('--episodes',type=int,default=1)
 parser.add_argument('--output-dir',type=Path,default=Path('outputs/controller'))
@@ -29,6 +29,11 @@ parser.add_argument('--exit-after',action='store_true',help='Close the GUI after
 parser.add_argument('--handover-mode',choices=('baseline','staged'),default='staged')
 parser.add_argument('--suite',choices=('nominal','perturb','negative'),default='nominal')
 parser.add_argument('--case',default='nominal',help='Fixed cube pose from benchmark_core.EVALUATION_CASES')
+if '--help' in sys.argv or '-h' in sys.argv:
+    parser.print_help()
+    print('\nIsaac launcher options also include --headless and --device cuda:0.\n'
+          'See: python scripts/inspect_task_layout.py --help')
+    raise SystemExit(0)
 options, rest = parser.parse_known_args()
 sys.argv=[sys.argv[0],*rest]
 import inspect_task_layout as layout
@@ -303,6 +308,7 @@ class Episode:
         self.max_tracking_m=0.;self.max_feedforward_Nm=0.
         self.max_speed_rad_s=0.;self.max_applied_torque_Nm=0.
         result=self.check_fk();result['cube_table_support_N']=support
+        result['measured_reset']=dict(self.env.evaluator.reset_metrics)
         return result
 
     def run(self,plan):
@@ -594,7 +600,8 @@ class Episode:
 def main():
     if options.episodes<1:raise ValueError('episodes must be positive')
     if options.case not in EVALUATION_CASES:raise ValueError(f'Unknown case {options.case}; choose {list(EVALUATION_CASES)}')
-    if options.suite!='nominal' and options.stage!='full':raise ValueError('Perturbation/negative suites require --stage full')
+    if options.suite=='negative' and options.stage!='full':raise ValueError('Negative suite requires --stage full')
+    if options.suite=='perturb' and options.stage not in ('model','full'):raise ValueError('Perturbation suite requires --stage model/full')
     cases=[(options.case,None)]
     if options.suite=='perturb':cases=[(name,None) for name in EVALUATION_CASES]
     if options.suite=='negative':cases=[('nominal','grasp'),('nominal','transfer')]
@@ -645,7 +652,7 @@ def main():
                 if not k.endswith(('_plan','_metrics','_trace','_peaks'))}
         state=dict(status='in_progress',run_id=run_id,history_file=str(history_path),
                    active_phase=episode.phase,active_case=episode.case,active_episode=active,
-                   completed_episodes=len(report['episodes']),last_episode_samples=episode.samples[-12:])
+                   finished_attempts=len(report['episodes']),last_episode_samples=episode.samples[-12:])
         path.write_text(json.dumps(jsonable(state),indent=2))
         logging_s+=time.perf_counter()-started
     unexpected_failures=[]
@@ -657,8 +664,8 @@ def main():
             xy,yaw,seed=EVALUATION_CASES[case]
             cube=np.array([*xy,.02]);rotation=Rotation.from_euler('z',yaw,degrees=True).as_matrix()
             plan_path=episode.plan_dir/'plan.json'
-            key=fingerprint(model)+json.dumps(EVALUATION_CASES[case])
             plan_started=time.perf_counter()
+            key=fingerprint(model)+json.dumps(EVALUATION_CASES[case])
             plan=json.loads(plan_path.read_text()) if plan_path.exists() else {}
             cache_hit=plan.get('fingerprint')==key
             if options.stage!='model' and not cache_hit:

@@ -749,3 +749,166 @@ plan. Reset also clears evaluator state at entry, including prerequisite
 failures. Failed cases retain a category, measured observation and plan-evidence
 path. This prevents a preceding successful episode from contaminating later
 failure evidence.
+
+### Fixed perturbation suite — actual failures retained
+
+`python scripts/run_manipulation.py --headless --stage full --suite perturb`
+(default staged mode) produced `full_20261022T115237457681Z.json`,
+`review_perturb.log`, **exit 1**. Full task 4/5 including nominal;
+**perturbed poses 3/4**. All five reset/approach/pickup/lift/transport stages
+passed. Seeded configurations were independently planned, not replayed from the
+nominal cube trajectory. All six report source hashes match `6fd9fd2` exactly,
+although the run began before that commit and recorded a dirty `7148636` HEAD.
+The later CLI-help/timing-label edits do not change this controller/planner.
+
+| Case / seed | Full task | Cube dip mm | Episode simulated s | Episode wall / planning s |
+| --- | --- | ---: | ---: | ---: |
+| nominal / 101 | pass | 9.984 | 209.167 | 78.159 / 9.137 |
+| X +1 mm / 102 | pass | 9.886 | 209.200 | 186.281 / 117.520 |
+| X −1 mm / 103 | pass | 9.986 | 209.367 | 185.958 / 117.015 |
+| yaw +1° / 104 | pass | 11.074 | 210.250 | 178.236 / 108.863 |
+| yaw −1° / 105 | planning rejection | not reached | 47.400 control s | 46.534 / 31.459 |
+
+Successful cases: zero independent collision violations, bin support >=0.4904325 N,
+settled linear speed <=0.00076332 m/s, angular speed <=0.01296422 rad/s.
+Across successful perturbations peak speed <=2.31662 rad/s, effort <=1.45229 N m,
+left/right stable-grasp slip <=0.288 / 0.771 mm. Maximum measured acceleration
+92.688 rad/s² and jerk 9310.246 rad/s³ remain uncategorized against absent limits.
+
+The −1° scene was rejected at sample 2,808/3,134 of open-HOME → pregrasp,
+`opposite:gripper/gripper`; the receiving robot had not moved toward the cube.
+Independent flags were pickup/lift true, handover/placement false, zero runtime
+collision violations. The stored failure duration 53.4 s includes initial and
+recovery reset (6 s); independent control elapsed was 47.4 s. Both resets passed.
+This is a valid safe failure, and exposes task-specific path sensitivity.
+Two bounded offline diagnostics tried pan-first and arm-fold-first staging;
+both were rejected for `cube:gripper` along the alternative segment. Evidence:
+`receiver_turn_first.json`, `receiver_fold_first.json` and corresponding review
+logs. Neither route was executed or added to production. No broad speculative
+search, reduced padding or allowed-contact exception was introduced.
+
+Suite wall 736.514 s includes four new pose plans, startup and recovery. Compact
+checkpoint logging 4.1505 s across five cases, versus 43.512 s in the preceding
+three-repeat logger. The nominal warm episode excluding its retreat revalidation
+was **69.0223 s**, versus 94.1721 s for the earlier all-cache third episode.
+Physics remains ~50.7 s per nominal episode. These are observed run times,
+not controlled statistical timing estimates. Final profile measurements were
+isolated; CPU regression ran concurrently with part of this diagnostic suite.
+Fixed cases are not IID samples, so 3/4 is a test-set fraction rather than a
+confidence-bounded estimate of general robustness. Need a held-out pose
+specification and more coverage before claiming a robust learning benchmark.
+
+### Deliberate physical failures
+
+`python scripts/run_manipulation.py --headless --stage full --suite negative`
+produced `full_20261022T120705264350Z.json`, `review_negative.log`, **exit 0**,
+`passed_negative_regression`. The donor-open omission yielded zero bilateral
+forces and `failed_grasp`; receiver-open omission yielded `failed_transfer`
+after the left acquisition/transport. **2/2 expected omissions detected, 0/2
+full-task successes**, no handover/placement flags, independent success false
+for both, verified recovery reset for both. Expert prerequisites abort early;
+the independent evaluator refuses completion without observed support. Its
+policy-independent timeout is separately unit-tested, not bypassed in these
+reports. Logging 0.3140 s. This regression success must never be counted as a
+manipulation success.
+
+Final CPU run on the committed model/evaluator/planner (`review_tests_committed.log`):
+**23/23 passed**, 41.149 s, including all 2,177 query comparisons / 4,215 approach
+samples. `--help` now lists task-specific arguments before launching Kit;
+`review_cli_help.log` and byte-compilation exited 0. Source/report provenance,
+cache settings and discrete physics limits are explicit. Full cold planning
+historically ~548 s at `9af7dc7` versus ~134 s in the hardened nominal run; this
+historical comparison includes changed sampling density and host conditions,
+not a controlled backend contest. No dependency/driver/material/gain changes.
+
+### Strict reset-case audit
+
+Final review found the inherited 2 mm / 2° reset tolerance could not distinguish
+our smaller 1 mm / 1° test cases. Tightened the independent reset pose gate to
+**0.1 mm three-dimensional position / 0.1° orientation**, retained existing
+velocity, arm and weight prerequisites, and record actual reset pose/quaternion
+and errors in every report. Added unit rejection of a misplaced 1 mm cube and a
+wrong 1° yaw. No physical parameters or reset commands changed.
+
+`python scripts/run_manipulation.py --headless --stage model --suite perturb`
+completed exit 0, `model_20261022T121432061342Z.json`, `review_reset_cases.log`:
+**5/5 physical reset/interface checks passed**. Maximum measured reset position
+error 0.0017271 mm, orientation error 0.0019348°. Actual X coordinates were
+−0.33900103 / −0.34100103 m in the shifted cases, and actual quaternions resolve
+both signed yaw perturbations. This independently audits realization of the
+case settings; it is not an additional full-task robustness run. The earlier
+4/5 full suite used the same reset commands/physics with the looser gate.
+Extended evaluator unit tests: 10/10 in 0.193 s (`review_reset_unit.log`).
+No change to existing geometric cache validity; only reset verification/report
+metadata changed. The policy audit also rejected invalid actions in all cases.
+
+### GUI regression / rendering profile
+
+`python scripts/run_manipulation.py --stage full` (default GUI + staged preload)
+completed objective evaluation: `full_20261022T120935212643Z.json`,
+`review_final_gui.log`, `passed_requested_stage`, all independent flags true,
+zero collisions. Its numerical physical metrics match the headless nominal
+trial (cube dip 9.98352 mm, peak speed 2.15129 rad/s, effort 1.35271 N m).
+All plans reused; cached approach load plus fingerprint validation 0.0318 s.
+Startup 8.958 s; 209.1667 simulated seconds took 406.387 s wall. Rendering alone
+213.360 s, physics 56.931 s, actuation 10.222 s, observations 18.261 s,
+evaluation 2.424 s; deliberate 8 ms/tick viewer pacing adds about 100 s.
+Checkpoint logging 1.101 s. This separates GUI/rendering cost from collision
+planning. A small portion overlapped the separate reset audit / final regression;
+GUI wall timing is descriptive, not an isolated rendering benchmark.
+The process is still open at `[VIEWER]`, physics frozen after completion.
+No exit code is claimed while it awaits window closure. Human confirmation of
+the original sequence was supplied in the mission brief; visual review of the
+new staged preload remains pending. Watch receiver dip, clean donor withdrawal
+and cube settling; all numerical gates already passed. This GUI run preceded
+the stricter reset-only evaluator gate; the final headless repeats below test
+that gate on the unchanged controller. Source hashes distinguish both revisions.
+
+### Final strict-gate nominal regression / review assessment
+
+`python scripts/run_manipulation.py --headless --stage full --episodes 3`
+completed **exit 0**, `full_20261022T121526133312Z.json`,
+`review_strict_final3.log`: every expert stage **3/3**, every independent flag
+true, zero collision violations. All six report source hashes were compared
+with the final working files and matched exactly before the final commit.
+The report records dirty `6fd9fd2` because the strict reset/report edits were
+not yet committed; the final audit commit contains those identical files.
+All three measured reset errors: 0.0017241 mm / 0.0018969°.
+Each episode lasted 209.1667 simulated seconds, with independent control
+206.1667 s. Cube dip 9.98315–9.98352 mm; min bin support 0.4904992 N, max settled
+linear/angular speed 0.00076357 m/s / 0.0129624 rad/s. Full-episode peak speed
+<=2.15130 rad/s, effort <=1.35272 N m, no carried-object environment contacts.
+Left/right stable slip <=0.211 / 0.790 mm; full TCP tracking <=16.024 / 20.710 mm.
+
+Warm approach load + fingerprint check 0.03117 s. Episode wall/planning seconds:
+102.107/0, 98.472/10.312, 88.025/0; checkpoint logging 1.935 s over three repeats.
+The GUI viewer was active concurrently, so these final correctness-run times
+are **not** replacements for the isolated ~69 s warm execution measurement.
+Nominal physical metrics reproduced despite the extra rendering workload.
+
+Review status: the deterministic nominal reference is ready for code review,
+with a preserved baseline, independent evaluator, repeated actual physics,
+quantified transfer improvement, profiled conservative collision acceleration,
+real failure tests, strict reset-case realization, documented action/observation
+contracts and no stack changes. It is **not a generally robust manipulation
+benchmark**: the fixed perturbed test fraction remains 3/4, COM velocity versus
+pose-derived velocity during grasp remains unresolved, acceleration/jerk limits
+are absent, and execution has no certified tracking tube/continuous-contact
+guarantee between physics ticks. The 20 Hz proprioceptive adapter and privileged
+60 Hz expert are explicitly different experimental tracks. No learning, dataset
+generation or real-robot success claimed.
+
+Created local hardening commits `7148636` and `6fd9fd2`, followed by the final
+strict-reset/audit commit (see `git log -3`). Main was not changed. Remote branch
+rechecked via the connected GitHub read API: still `4c6a9d3c6d5751f7978ae07a43adf5fe9b726fb4`,
+so it does not contain the latest successful local task or this hardening work.
+No push/merge/deletion performed under the new brief. Twenty tracked text/source
+files total about 301 KB; generated outputs are ignored. Credential-pattern
+scan flagged no tracked files. The sole pre-existing untracked calibrator is
+preserved and remains outside commits.
+
+Remaining user checkpoint: visually review staged receiver loading (roughly
+10 mm dip), clean donor withdrawal and settled basket placement. GUI defaults
+and the open completed scene are preserved. After visual review and acceptance
+of the documented coverage limits, decide whether to publish this feature branch
+and approve the three proposed removals above. No merge into main is authorized.

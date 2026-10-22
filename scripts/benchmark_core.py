@@ -89,16 +89,20 @@ class TaskEvaluator:
         self.max_slip_mm = np.zeros(2)
         self.max_slip_deg = np.zeros(2)
         self.collision_violations = 0
+        self.reset_metrics = {}
 
     def reset(self, frame, expected_xy, expected_quaternion=(1.,0,0,0)):
         self.reset_state()
-        if (np.linalg.norm(frame.cube[:2] - expected_xy) > .002
-                or abs(frame.cube[2] - .02) > .002
+        position_error=np.linalg.norm(frame.cube[:3]-np.r_[expected_xy,.02])
+        angle=Rotation.from_matrix(Rotation.from_quat(np.roll(expected_quaternion,-1)).as_matrix().T
+                    @frame.cube_pose()[:3,:3]).magnitude()
+        self.reset_metrics=dict(cube_m=frame.cube[:3].tolist(),cube_quaternion_wxyz=frame.cube[3:7].tolist(),
+                               position_error_mm=float(position_error*1000),orientation_error_deg=float(np.rad2deg(angle)))
+        if (position_error > .0001
                 or np.max(np.abs(frame.q[:, :5])) > np.deg2rad(1)
                 or np.linalg.norm(frame.cube[7:10]) > .025
                 or np.linalg.norm(frame.cube[10:13]) > .1
-                or Rotation.from_matrix(Rotation.from_quat(np.roll(expected_quaternion,-1)).as_matrix().T
-                    @frame.cube_pose()[:3,:3]).magnitude()>np.deg2rad(2)
+                or angle>np.deg2rad(.1)
                 or not .3 < frame.environment[0] < .7):
             raise RuntimeError('Independent reset pose, velocity or weight prerequisite failed')
         self.initial_cube = frame.cube[:3].copy()
@@ -200,6 +204,7 @@ class TaskEvaluator:
 
     def report(self):
         return dict(success=self.success, stages=dict(self.flags), failure=self.failure,
+                    reset=dict(self.reset_metrics),
                     elapsed_s=self.elapsed_s, collision_violations=self.collision_violations,
                     max_joint_speed_rad_s=self.max_speed, max_effort_Nm=self.max_effort,
                     max_tcp_tracking_mm=self.max_tracking_mm.tolist(), max_joint_tracking_deg=self.max_tracking_deg.tolist(),
