@@ -1500,3 +1500,22 @@ Current-schema recorded-target replay, with NO expert plans or contact servo:
 `corrected_replay/full_20261022T173946110719Z.json`, exit0, all independent stages
 true, full success150.35s, zero collisions, speed2.0110rad/s, effort1.34962Nm.
 This verifies action semantics through real physics; no recorded states copied.
+
+### Verified -1degree full recovery, sourcefb408f5
+
+`corrected_yaw_float32/full_20261022T175104954670Z.json`: all independent stages
+true, FULL success, sourcefb408f58d8737c928694b8aa5dbfb6ee176d73a3, dirtyFalse,
+zero collisions. User confirmed "Clean withdrawal and placement" for this exact
+visible run.138.0333s independent elapsed; peak2.34637rad/s,1.45375Nm, stable
+right slip1.16477mm/.99672degree. Acceleration160.135rad/s2 and jerk18,109.0rad/s3
+measured, no authored limits to certify.563 contiguous60Hz transfer samples,
+max gap1/60s, dip4.4587mm. Donor RRT1iteration/10edges/3,042samples/21.826s,
+three transit nodes plus the initial clear separation. Episode410.707wall,
+planning100.141wall amid other jobs; not isolated playback throughput.
+Original failed planning/float32 attempts remain counted in their own cohorts.
+This is one fixed-case recovery, not a rerun of the full five-case suite.
+
+Independent raw/v3 preservation check:12 samples (start/middle/end of each of
+four episodes), exact float32 state and actions, ZERO RGB byte error in BOTH
+views after official reader decoding, timestamps within1e-5s,11,986 totalframes.
+`il_v3_raw_alignment.json` /log, exit0. No privileged features in the dataset.

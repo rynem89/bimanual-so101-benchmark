@@ -78,9 +78,10 @@ fixed case; `--suite perturb` runs all five. Seeds 101–105 and exact initial
 poses are in `benchmark_core.EVALUATION_CASES`. `--episodes` repeats each case.
 These are small diagnostic perturbations, not a sampled task distribution.
 The original full perturbation suite exited 1 on −1° yaw. The new receiver RRT
-reaches a verified handover for that case, but its axial donor retreat was then
-rejected. A checked donor RRT fallback passes the offline regression; physical
-recovery is pending. The failure remains counted with unchanged safety gates.
+and bounded donor withdrawal fallback now complete that case: one full physical
+success, zero collisions, 138.03 simulated seconds, with user visual confirmation.
+The old failure remains in the historical cohort; the whole five-case suite has
+not yet been rerun with the new mode.
 
 Each run writes `outputs/controller/simulation.json` checkpoints and a unique
 `full_<UTC timestamp>.json` (or the requested stage name). Full timestamped history persists at episode boundaries; the two-second
@@ -198,7 +199,7 @@ python -m unittest discover -s tests -v
 python scripts/so101_planning.py --profile --output outputs/controller/profile_final.json
 ```
 
-Current CPU regression: **34 tests passed** in 70.029 s, including independent evaluator
+Current CPU regression: **34 tests passed** in 72.781 s, including independent evaluator
 false-positive/negative cases, timeout/reset, FK/IK, triangle containment,
 rotated/acute convex envelopes, ambiguous LP status, trajectory derivatives and
 cache invalidation. Complete approach tests compare every optimized hull query
@@ -252,6 +253,12 @@ along the fixed pad's negative TCP-X normal, followed by the unchanged three-sec
 right-only support gate. **Three full regressions passed**, all independent gates true and zero forbidden
 contacts, each 156.18 simulated seconds. The original fixed-jaw expert remains
 available by omitting the feedback flag; baseline `05a0c13` is preserved in Git.
+If the donor's fixed-orientation axial retreat exhausts five-axis IK, one bounded
+RRT attempt can return the already-clear open donor to HOME. Its turns execute
+as separately checked quintic segments, without spline shortcuts. The −1° yaw
+case passed physical and visual validation: 4.46 mm transfer dip, peak speed
+2.346 rad/s, effort 1.454 N m, zero forbidden contacts. Acceleration and jerk
+remain measured quantities without authored limits.
 
 The launcher previously replaced the shell's `OPENBLAS_NUM_THREADS=1` with 32.
 CPU-only NumPy/SciPy initialization now precedes Kit startup, and public Kit
@@ -304,6 +311,11 @@ float32 rounding tolerance. Process-start source hashes, revision and dirty stat
 identify the generating controller. Legacy 1.0 files remain readable and explicitly
 report whether action bounds were verified. A local v3 dataset
 embeds images in parquet; no video codec or Hub upload is required.
+Current-schema target-only replay passed the full task in 150.35 simulated
+seconds with zero collisions, using no expert planner, feedback servo or recorded
+physical state writes. At the start/middle/end of all four converted episodes,
+the official v3 reader reproduced state/actions exactly and both RGB images
+byte-for-byte, with correct timestamps.
 
 The original symmetric ±10 mm X / ±7 mm Y / ±6° candidate distribution produced
 **2/4 full successes**, with two pre-grasp collision rejections. IK continuation
@@ -323,7 +335,7 @@ alignment. This is still a small prefix, not validation of the whole distributio
 The manifest fixes 32 training, 8 validation and 30 held-out cases with separate
 seeds. A geometric pass is not a manipulation success; all physical failures
 must remain in the denominator. The fixed nominal and −1° regressions remain
-separate, including the unresolved donor withdrawal limitation.
+separate. The former −1° donor-withdrawal failure now has a verified recovery.
 
 Use separate shells/environments:
 
