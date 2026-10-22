@@ -515,6 +515,22 @@ def plan_placement(model, left_q, right_q, cube_in_right_tcp, continuous=False):
         if third['safe']:
             departure={'waypoints':[*retreat,turned,home],'checks':[*checks,second,third],'curve_check':curve_check};break
         result['rejections'].append(third)
+    if departure is None:
+        # A fixed-orientation Cartesian retreat can exhaust the five-axis IK
+        # range even after the donor is clear. Reuse the checked open-hand
+        # global transit; never spline its turns or exempt later cube contact.
+        for pan_clearance in (-2.,-4.,2.,4.):
+            separated=left_q.copy();separated[0]+=np.deg2rad(pan_clearance)
+            separated[-1]=home[-1]  # Measured float32 jaw vs exact open target.
+            if world.check(separated,margin=.001):continue
+            separation=world.segment(left_q,separated,margin=.001,cube_contact=True)
+            if not separation['safe']:continue
+            transit=world.joint_transit(separated,home)
+            if transit['safe']:
+                departure=dict(kind='joint_transit',waypoints=[left_q,*transit['waypoints']],
+                               checks=[separation],transit=transit,curve_check=None)
+            else:result['rejections'].append(dict(donor_transit=transit))
+            break  # At most one bounded global attempt after local alternatives.
     if departure is None:return result
     for height in (.11,.105,.10):
         for heading in (19.,18.5,19.5):

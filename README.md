@@ -18,8 +18,9 @@ passed **3/4 perturbed poses** (4/5 including nominal); −1° yaw was rejected
 before receiver motion. Both deliberate grasp/transfer omissions were detected
 with zero task successes. Detailed measurements are
 recorded in the [engineering handoff](docs/ROBOTICS_CODEX_HANDOFF.md#engineering-audit--benchmark-hardening-2026-10-22).
-The user confirmed the complete physical sequence and the continuous-motion
-replay. The newer RRT transit and measured donor-clearance move still need a visual check. Repeated identical starts establish
+The user confirmed the complete physical sequence, continuous-motion replay,
+RRT transit and measured donor-clearance move, including the 20 Hz recording run.
+Repeated identical starts establish
 repeatability, not general robustness or real-robot success.
 
 ## Run the simulator
@@ -56,6 +57,10 @@ viewer rendering. `[PLAN DONE]` reports fresh planning duration; `[CACHE]`
 confirms checked-segment reuse. Preserve `outputs/controller/plans/` for warm
 runs. Cold simulator startup measured about 5.3 s with existing local Kit/assets
 caches. The first complete run must validate many paths and is slower.
+When recording, wait for `[RESULT]` and `[VIEWER]` before closing the window.
+Closing/stopping the timeline earlier can leave the pinned simulator rendering
+without advancing physics. Incomplete attempts remain on disk and are excluded
+from successful demonstrations. Prefer `--headless` for unattended generation.
 
 | `--stage` | Evaluation stops after |
 | --- | --- |
@@ -72,9 +77,10 @@ caches. The first complete run must validate many paths and is slower.
 fixed case; `--suite perturb` runs all five. Seeds 101–105 and exact initial
 poses are in `benchmark_core.EVALUATION_CASES`. `--episodes` repeats each case.
 These are small diagnostic perturbations, not a sampled task distribution.
-The current full perturbation command exits 1 because the −1° yaw case has no
-validated receiver route; its failure is an expected documented limitation,
-not an allowed-contact or success-threshold exception.
+The original full perturbation suite exited 1 on −1° yaw. The new receiver RRT
+reaches a verified handover for that case, but its axial donor retreat was then
+rejected. A checked donor RRT fallback passes the offline regression; physical
+recovery is pending. The failure remains counted with unchanged safety gates.
 
 Each run writes `outputs/controller/simulation.json` checkpoints and a unique
 `full_<UTC timestamp>.json` (or the requested stage name). Full timestamped history persists at episode boundaries; the two-second
@@ -192,7 +198,7 @@ python -m unittest discover -s tests -v
 python scripts/so101_planning.py --profile --output outputs/controller/profile_final.json
 ```
 
-Current CPU regression: **31 tests passed**, including independent evaluator
+Current CPU regression: **34 tests passed** in 70.029 s, including independent evaluator
 false-positive/negative cases, timeout/reset, FK/IK, triangle containment,
 rotated/acute convex envelopes, ambiguous LP status, trajectory derivatives and
 cache invalidation. Complete approach tests compare every optimized hull query
@@ -309,10 +315,15 @@ approach draws passed complete path checks**; the first physical source-frozen f
 batch had one success, two recorder-clock failures and one receiver-plan
 rejection. All remain counted. The recorder clock now restarts relative to each
 reset, including resets at global ticks not divisible by three.
+The corrected source-frozen prefix now passed **4/4 full attempts**, all independent
+stages and zero collision violations. Raw schema 1.1 validation and official v3.0
+conversion passed: **11,986 frames**, 599.3 s, in `datasets/lerobot_corrected_train4`.
+The fourth reset starts at global physics tick 27,827 and retains exact 20 Hz
+alignment. This is still a small prefix, not validation of the whole distribution.
 The manifest fixes 32 training, 8 validation and 30 held-out cases with separate
 seeds. A geometric pass is not a manipulation success; all physical failures
 must remain in the denominator. The fixed nominal and −1° regressions remain
-separate, including the unresolved receiver limitation.
+separate, including the unresolved donor withdrawal limitation.
 
 Use separate shells/environments:
 

@@ -1394,3 +1394,84 @@ After the user reported Git authentication complete, an actual escalated
 No credential helper or gh executable is configured in this terminal context.
 Asked for a successful `git ls-remote origin refs/heads/feat/fingertip-geometry-calibration`
 in the same workspace. No push is claimed and no remote ref changed.
+
+### Published history and corrected four-case cohort
+
+Authentication subsequently worked. Fetch obtained feature tip4c6a9d3; its entire
+Git tree85a24610df2bbaf36122744b1ca35c5ce2e12a65 EXACTLY matched local historical
+c4620be, with no unique remote file changes. A feature-only `ours` merge joined
+both histories while preserving the tested c1d8336 tree byte for byte. Normal
+non-force push succeeded; `git ls-remote` independently confirmed
+`0f6793d000ad0fef02169949e8aab8f00f29a76d`. Main unchanged; no rewrite/publication.
+
+The user's visual confirmation actually corresponds to GUI report
+full_20261022T165446538383Z.json: all SEVEN source hashes match ba0bb04 exactly,
+although its recorded parent revision2fe2a77 was dirty at execution. Thus the
+confirmation already covered RRT/normal donor clearance. A subsequent20Hz RGB
+GUI run was also visually confirmed, but the user closed the window before the
+final terminal recording finished. Capture stopped at3,043 images near bin_settle;
+task-owned process59805 was interrupted with SIGINT (exit0 through Kit handling).
+Preserved raw incomplete attempt and interrupted_gui_checkpoint.json; NO completed
+numerical success claimed for that attempt. Pinned SimulationContext.step and
+STOP callback can render while waiting for playing; this is consistent with the
+stall, not proof of the exact callback responsible. Wait for RESULT/VIEWER before
+closing a recording GUI; headless generation avoids this interaction.
+
+Separate nominal automated record: `corrected_nominal/full_20261022T172237776401Z.json`,
+exit0, all stages/safety gates passed;3,063frames,153.15control seconds, schema1.1
+bounds verified, source0f6793d. Checked caches copied from the interrupted GUI;
+normal clearance remeasured/planned,1.47s. Full60Hz transfer trace563 samples,
+maximumgap.0166666667s, uniform; cube dip5.8784mm including normal clearance.
+Right-TCP dip5.7597mm; peak joint speed2.0110rad/s, effort1.34962Nm. Reported COM
+vertical velocity residual persists (.04299m/s vs pose-derived.00000268m/s);
+no velocity-settled claim. Total135.977wall includes recording and overlap with
+other jobs, not an isolated speed benchmark. Camera teardown exited0.
+
+```bash
+python scripts/run_manipulation.py --headless --stage full --motion-mode continuous --expert-hz 20 --grip-feedback-from-lift --cases-file outputs/controller/train_v2_4.json --record-dir datasets/raw_train_v2_corrected --output-dir outputs/controller/corrected_train
+```
+
+`corrected_train/full_20261022T171227680021Z.json`, exit0, **4/4 full successes**,
+every independent stage true, zero collision violations. Schema1.1 validation
+also passed all four: frames3,042/2,920/3,073/2,951 = **11,986**,599.3s at20Hz.
+All sourcec1d8336 with tracked dirtyFalse; current Git changes during run did not
+relabel already-loaded source. Actual episode starting ticks180/9,486/18,426/
+27,827; the last is NOT divisible by3, demonstrating corrected relative clock
+on real multi-episode physics. Peak speed2.47281rad/s, effort1.50913Nm across
+cohort. This is four preselected draws, not validated32/8/30 coverage or a
+statistical robustness claim. Initial failed batches remain separately counted.
+Raw validation results in il_corrected_train4_validation.json.
+
+Seeded official Diffusion1,000-update pilot:
+`diffusion_seeded_pilot/full_20261022T172619027187Z.json`, exit1, **0/5**;
+nominal/heldout000/001/002 actuator violations at.85/1.50/.90/1.0167s;
+heldout003 right wrist/jaw forbidden contact at.5167s. No pickup stages.
+Per-case seed101,813000..813003 and checkpoint weight hash recorded in report.
+Maximum model action-request time across cases23.65ms, including queued actions;
+this is not full closed-loop wall time or a manipulation success. These replace
+the unseeded pilot observations for reproducible diagnostics, NOT the requested
+credible trained-policy comparison. Both models still trained on the original
+two-demo shifted distribution, not the corrected four-case dataset.
+
+### Donor axial-retreat limitation and bounded fallback
+
+Fixed -1degree retest `corrected_yaw_minus/full_20261022T172435530481Z.json`
+failed safely at plan_placement. Pickup, lift and right-only handover succeeded;
+no unsafe withdrawal issued. Receiver RRT resolved the original earlier planning
+failure, but40mm fixed-orientation donor IK exhausted its feasible range after
+about20mm. Saved measured pose used for an offline test: a clear -2degree pan
+separation then bounded donor RRT found a3-node route to HOME,1iteration,
+10checked edges/3,042samples/20.42s (`il_donor_rrt_probe.json`).
+
+Reused that SAME collision world/RRT only after all existing Cartesian departures
+fail. Exactly one bounded global attempt; open jaw fixed, all arm/Cube/right/bin
+checks retained, no spline across RRT turns. Runtime executes separate quintics.
+Full offline placement (including carried cube travel and release opening)
+selected the fallback in35.257s (`il_donor_fallback_offline.json`). This is
+geometric evidence only; physical -1degree recovery still pending below.
+
+Fallback CPU regression: **34/34 tests passed in70.029s**,
+il_donor_fallback_tests.log, including full saved-pose donor/loaded-bin geometry
+regression. `git diff --check` passed. Four-case dataset conversion exited0,
+reader verified4episodes/11,986frames/v3.0 in datasets/lerobot_corrected_train4,
+il_corrected_train4_conversion.log. No validation/test statistics were used.

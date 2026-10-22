@@ -634,7 +634,7 @@ class Episode:
         if selected is None:raise RuntimeError('No validated withdrawal/bin path; see placement_plan.json')
         self.contact_arms.discard('Left_Robot')
         waypoints=[np.array(q) for q in selected['left_departure']['waypoints']]
-        if options.motion_mode=='continuous':
+        if options.motion_mode=='continuous' and selected['left_departure'].get('kind')!='joint_transit':
             self.move(waypoints[0],waypoints[1],'left_separation',contact=True)
             self.follow(waypoints[1:18],'left','left_cartesian_retreat',.2)
             for i in range(17,len(waypoints)-1):

@@ -116,6 +116,25 @@ class ModelTests(unittest.TestCase):
     def test_unreachable_target_is_rejected(self):
         self.assertEqual(self.model.ik([2,2,2],seeds=2),[])
 
+    def test_donor_withdrawal_recovers_recorded_axial_ik_failure(self):
+        from so101_planning import plan_placement
+        # Measured right-only hold from the fixed -1 degree yaw regression.
+        # Its 40 mm axial donor retreat exhausts IK; all later geometry still
+        # needs checking, including the carried cube and bin release opening.
+        left=np.array([1.5710519552,.1522724628,1.0316096544,-1.5694576502,.1755351722,.7853982449])
+        right=np.array([-1.5963497162,-.8121492863,.5984927416,.7274165750,-1.7238614559,.3762028813])
+        local=np.array([[.0085353368,.9952957157,.0965069234,-.0012996518],
+                        [.9999025491,-.0095611827,.0101723185,.0009427735],
+                        [.0110471854,.0964106946,-.9952803312,-.0017849291],[0,0,0,1]])
+        result=plan_placement(self.model,left,right,local,continuous=True)
+        self.assertIsNotNone(result['selected'])
+        selected=result['selected'];departure=selected['left_departure']
+        self.assertEqual(departure['kind'],'joint_transit')
+        self.assertTrue(departure['transit']['safe'])
+        np.testing.assert_allclose(departure['waypoints'][-1],np.r_[np.zeros(5),np.pi/4])
+        self.assertTrue(selected['carry_check']['safe'])
+        self.assertTrue(selected['opening_check']['safe'])
+
     def test_pickup_continuation_retains_collision_rejection(self):
         from scipy.spatial.transform import Rotation
         from so101_planning import plan_pickup
