@@ -29,12 +29,25 @@ if not ROBOT_USD.is_file():
     )
 os.environ["LEISAAC_ASSETS_ROOT"] = str(ASSETS_ROOT)
 
+# CPU-only imports are safe before Kit. Initialize both BLAS libraries with the
+# user's limit before Sim 5.1 overwrites OPENBLAS_NUM_THREADS with 32 at startup.
+NUMERICAL_THREADS=os.environ.setdefault('OPENBLAS_NUM_THREADS','1')
+import numpy as np
+import scipy.linalg
+
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--cpu-threads',type=int,default=1,help='Per-process Kit worker limit; numerical libraries honor pre-launch OPENBLAS_NUM_THREADS')
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+if args.cpu_threads<1:raise ValueError('cpu-threads must be positive')
+# Lab 2.3 filters out SimulationApp's limit_cpu_threads keyword. Public Kit
+# arguments reach the actual worker settings without patching the pinned stack.
+args.kit_args=(f'--/plugins/carb.tasking.plugin/threadCount={args.cpu_threads} '
+               f'--/plugins/omni.tbb.globalcontrol/maxThreadCount={args.cpu_threads} '+(args.kit_args or ''))
 launcher = AppLauncher(args)
+os.environ['OPENBLAS_NUM_THREADS']=NUMERICAL_THREADS
 app = launcher.app
 
 # POST-LAUNCH: simulation-dependent imports must come after AppLauncher.

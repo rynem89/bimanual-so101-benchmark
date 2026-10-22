@@ -60,6 +60,7 @@ class BenchmarkEnv:
             raise RuntimeError('Robot pairwise contact prerequisites failed')
         self.evaluator=TaskEvaluator(model.limits,model.adjacent,TaskSpec(physics_dt=self.dt))
         self.total_steps=0
+        self.policy_origin_step=0
         self.timings={name:0. for name in ('actuation','physics','rendering','observations','evaluation','reset','camera')}
         self.frame=None
         self.matrices=[]
@@ -216,5 +217,6 @@ class BenchmarkEnv:
         self.cube.write_root_state_to_sim(state);self.cube.reset()
         for _ in range(180):self.advance(np.zeros((2,6)),evaluate=False)
         self.evaluator.reset(self.frame,np.array(cube_xy),np.roll(quaternion,1))
+        self.policy_origin_step=self.total_steps
         self.timings['reset']+=time.perf_counter()-started
         return self.observe()

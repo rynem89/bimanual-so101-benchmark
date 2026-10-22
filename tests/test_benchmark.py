@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from benchmark_core import Frame,TaskEvaluator,TaskSpec,JointPath,quintic,trajectory_limits,transfer_metrics
+from benchmark_core import Frame,TaskEvaluator,TaskSpec,JointPath,policy_boundary,quintic,trajectory_limits,transfer_metrics
 
 
 def frame(position=(-.34,-.04,.02)):
@@ -101,6 +101,12 @@ class EvaluationTests(unittest.TestCase):
 
 
 class TrajectoryTests(unittest.TestCase):
+    def test_policy_clock_restarts_at_arbitrary_reset_tick(self):
+        for origin in (180,181,182,9041):
+            self.assertEqual([step for step in range(origin,origin+9) if policy_boundary(step,origin)],
+                             [origin,origin+3,origin+6])
+        with self.assertRaises(ValueError):policy_boundary(100,101)
+
     def test_joint_spline_is_c2_and_its_analytic_bounds_cover_execution(self):
         points=np.array([[0]*6,[.05,.1,0,0,0,0],[.12,.08,0,0,0,0],[.2,.14,0,0,0,0]])
         path=JointPath(points,.12)

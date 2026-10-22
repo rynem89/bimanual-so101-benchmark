@@ -135,6 +135,74 @@ class CollisionWorld:
             if faults:return dict(safe=False,samples=count,failed_sample=i,faults=faults)
         return dict(safe=True,samples=count,duration_s=path.duration,**path.limits())
 
+    def joint_transit(self,start,goal,seed=101,max_iterations=300,max_seconds=60.):
+        """Bounded deterministic RRT-Connect for a blocked open-hand transit.
+
+        Every accepted edge uses the same dense, displacement-bounded segment
+        checker as the reference. No endpoint-only acceptance or unchecked
+        smoothing. Jaw stays open; all five arm joints remain within USD limits.
+        """
+        import time
+        if max_iterations<1 or max_seconds<=0:raise ValueError('Positive RRT budgets required')
+        started=time.perf_counter();start=np.asarray(start,dtype=float);goal=np.asarray(goal,dtype=float)
+        if start.shape!=(6,) or goal.shape!=(6,) or not np.isfinite([start,goal]).all():
+            raise ValueError('Finite six-joint RRT endpoints required')
+        if abs(start[-1]-goal[-1])>1e-12:raise ValueError('Transit jaw must stay fixed')
+        lower,upper=self.model.limits[:5].T;rng=np.random.default_rng(seed)
+        trees=[([start.copy()],[-1]),([goal.copy()],[-1])];samples=0;edges=0
+        def extend(tree,target):
+            nonlocal samples,edges
+            points,parents=tree
+            near=int(np.argmin([np.linalg.norm(q[:5]-target[:5]) for q in points]));origin=points[near]
+            delta=target[:5]-origin[:5];distance=np.linalg.norm(delta)
+            if distance<1e-10:return near,True
+            q=origin.copy();q[:5]+=delta*min(1.,.25/distance)
+            q[:5]=np.clip(q[:5],lower,upper)
+            if self.check(q,margin=.001):return None,False
+            proof=self.segment(origin,q,margin=.001);samples+=proof['samples'];edges+=1
+            if not proof['safe']:return None,False
+            points.append(q);parents.append(near)
+            return len(points)-1,distance<=.25
+        def branch(tree,index):
+            path=[]
+            while index>=0:path.append(tree[0][index]);index=tree[1][index]
+            return path[::-1]
+        result=dict(safe=False,seed=seed,max_iterations=max_iterations,max_seconds=max_seconds)
+        if np.any(np.minimum(start,goal)<self.model.limits[:,0]) or np.any(np.maximum(start,goal)>self.model.limits[:,1]):
+            return dict(result,faults=['rrt_joint_limit'],samples=0)
+        if self.check(start,margin=.001) or self.check(goal,margin=.001):
+            return dict(result,faults=['rrt_endpoint_collision'],samples=0)
+        for iteration in range(max_iterations):
+            if time.perf_counter()-started>max_seconds:break
+            active=iteration%2;other=1-active
+            if rng.random()<.2:target=trees[other][0][0].copy()
+            elif rng.random()<.7:
+                u=rng.random();target=start+u*(goal-start)
+                target[:5]+=rng.normal(0,.45,5);target[:5]=np.clip(target[:5],lower,upper)
+            else:target=np.r_[rng.uniform(lower,upper),start[-1]]
+            index,_=extend(trees[active],target)
+            if index is None:continue
+            target=trees[active][0][index]
+            while time.perf_counter()-started<=max_seconds:
+                joined,reached=extend(trees[other],target)
+                if joined is None:break
+                if reached:
+                    a=branch(trees[active],index);b=branch(trees[other],joined)
+                    path=a+b[-2::-1] if active==0 else b+a[-2::-1]
+                    # Remove only exactly collinear subdivision nodes: their
+                    # already-checked edge union is the identical joint line.
+                    compressed=[path[0]]
+                    for i in range(1,len(path)-1):
+                        before=path[i]-compressed[-1];after=path[i+1]-path[i]
+                        if np.linalg.norm(before/np.linalg.norm(before)-after/np.linalg.norm(after))>1e-9:
+                            compressed.append(path[i])
+                    compressed.append(path[-1])
+                    return dict(result,safe=True,waypoints=compressed,raw_nodes=len(path),
+                                iterations=iteration+1,checked_edges=edges,samples=samples,
+                                wall_s=time.perf_counter()-started)
+        return dict(result,iterations=iteration+1,checked_edges=edges,samples=samples,
+                    wall_s=time.perf_counter()-started,faults=['bounded_rrt_no_path'])
+
 
 def plan_pickup(model, cube=(-.34,-.04,.02), rotation=None):
     """Find reachable pregrasp/grasp with aligned cube faces and validate travel."""
@@ -326,53 +394,76 @@ def plan_transport(model, start_q, cube_in_tcp):
 
 
 def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False):
-    """Plan the open right hand around the actual held cube and stationary left."""
+    """Checked Cartesian insertion plus a bounded global transit when needed."""
     import copy
     right=copy.copy(model);right.base=model.base.copy();right.base[0,3]=.25
     swap=np.array([[0,1,0],[1,0,0],[0,0,-1.]])
     rotation=cube_pose[:3,:3]@swap
     goals=right.ik(cube_pose[:3,3],rotation=rotation,reference=reference_q,seeds=6)
     world=CollisionWorld(right,cube_pose[:3,3],other_q=left_q,other_base=model.base,cube_rotation=cube_pose[:3,:3])
-    result={'left_q':left_q,'cube_pose':cube_pose,'selected':None,'rejections':[]}
+    result={'left_q':left_q,'cube_pose':cube_pose,'selected':None,'rejections':[]};rrt_attempted=False
     for goal in goals:
         faults=world.check(goal['q'],margin=.001)
-        if faults:
-            result['rejections'].append({'goal':faults});continue
+        if faults:result['rejections'].append({'goal':faults});continue
         for distance in (.04,.02):
             pres=right.ik(cube_pose[:3,3]+rotation[:,2]*distance,rotation=rotation,reference=goal['q'],seeds=3)
             for pre in pres:
                 if pre['limit_margin_deg']<3:continue
                 opened=np.zeros(6);opened[-1]=np.pi/4
-                closure=goal['q'].copy();closure[-1]=np.deg2rad(15)
-                # Joint interpolation bows into the cube despite clear end
-                # poses. Follow the approach axis with short Cartesian IK legs.
                 approach=[pre['q']]
                 for offset in np.linspace(distance,0,17)[1:]:
                     solutions=right.ik(cube_pose[:3,3]+rotation[:,2]*offset,rotation=rotation,
                                        reference=approach[-1],seeds=0)
                     if not solutions:break
-                    approach.append(min(solutions,key=lambda s:np.linalg.norm(s['q']-approach[-1]))['q'])
+                    approach.append(min(solutions,key=lambda r:np.linalg.norm(r['q']-approach[-1]))['q'])
                 if len(approach)!=17:
                     result['rejections'].append({'cartesian_ik_failed':len(approach)});continue
-                waypoints=[np.zeros(6),opened,*approach]
-                pairs=list(zip(waypoints[:-1],waypoints[1:]))
-                checks=[]
-                for a,b in pairs:
-                    check=world.segment(a,b,margin=.001)
-                    checks.append(check)
-                    if not check['safe']:break
-                if len(checks)==len(pairs) and all(c['safe'] for c in checks):
-                    curve_check=world.curve(approach) if continuous else None
-                    if continuous and not curve_check['safe']:
-                        result['rejections'].append({'curve':curve_check});continue
-                    check=world.segment(goal['q'],closure,margin=.001,cube_contact=True)
-                    checks.append(check)
-                    if check['safe']:
-                        result['selected']={'waypoints':waypoints,
-                                            'checks':checks,'grasp_ik':goal,'pre_ik':pre,'curve_check':curve_check}
-                        return result
-                result['rejections'].append(checks)
+                insertion=[world.segment(a,b,margin=.001) for a,b in zip(approach[:-1],approach[1:])]
+                if not all(c['safe'] for c in insertion):result['rejections'].append(insertion);continue
+                curve_check=world.curve(approach) if continuous else None
+                if continuous and not curve_check['safe']:
+                    result['rejections'].append({'curve':curve_check});continue
+                first=world.segment(np.zeros(6),opened,margin=.001)
+                if not first['safe']:result['rejections'].append(first);continue
+                transit=world.segment(opened,pre['q'],margin=.001);route=[opened,pre['q']]
+                if not transit['safe']:
+                    result['rejections'].append(transit)
+                    if rrt_attempted:continue
+                    rrt_attempted=True
+                    transit=world.joint_transit(opened,pre['q'])
+                    if not transit['safe']:result['rejections'].append(transit);continue
+                    route=transit['waypoints']
+                closure=approach[-1].copy();closure[-1]=np.deg2rad(15)
+                check=world.segment(approach[-1],closure,margin=.001,cube_contact=True)
+                if not check['safe']:result['rejections'].append(check);continue
+                result['selected']={'waypoints':[np.zeros(6),*route,*approach[1:]],
+                    'approach_start_index':len(route),'transit_routed':len(route)>2,
+                    'checks':[first,transit,*insertion,check],'grasp_ik':goal,'pre_ik':pre,'curve_check':curve_check}
+                return result
     return result
+
+
+def plan_donor_clearance(model,left_q,right_q,cube_pose):
+    """Release the fixed finger along its outward normal after opening the jaw.
+
+    The calibrated fixed pad is on negative TCP X. Opening the moving jaw alone
+    need not remove fixed-pad contact when the receiver prevents the cube moving.
+    Only this small departing segment allows initial finger/cube contact; its
+    endpoint must clear the cube and every other pair retains normal checking.
+    """
+    right_base=model.base.copy();right_base[0,3]=.25
+    world=CollisionWorld(model,cube_pose[:3,3],other_q=right_q,other_base=right_base,cube_rotation=cube_pose[:3,:3])
+    pose=model.tcp_pose(left_q);rejections=[]
+    for distance in (.004,.008,.012):
+        target=pose[:3,3]-pose[:3,0]*distance
+        for orientation in ({'rotation':pose[:3,:3]},{'approach':-pose[:3,2]}):
+            for solution in model.ik(target,reference=left_q,opening_deg=np.rad2deg(left_q[-1]),seeds=2,**orientation):
+                end=solution['q']
+                if world.check(end,margin=.001):continue
+                proof=world.segment(left_q,end,margin=.001,cube_contact=True)
+                if proof['safe']:return dict(safe=True,goal_q=end,distance_m=distance,check=proof,ik=solution)
+                rejections.append(proof)
+    return dict(safe=False,rejections=rejections)
 
 
 def plan_placement(model, left_q, right_q, cube_in_right_tcp, continuous=False):

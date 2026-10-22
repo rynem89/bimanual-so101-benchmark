@@ -8,6 +8,36 @@ from so101_model import SO101Model,calibrate,box_mesh,mesh_box_overlap,triangle_
 
 
 class GeometryTests(unittest.TestCase):
+    def test_bounded_rrt_checks_edges_and_reports_no_path(self):
+        from types import SimpleNamespace
+        from so101_planning import CollisionWorld
+        class AnalyticWorld(CollisionWorld):
+            def __init__(self,blocked=False):
+                self.model=SimpleNamespace(limits=np.array([[0,1],[-1,1],[-.1,.1],[-.1,.1],[-.1,.1],[0,1]]))
+                self.wall=np.array([[.4,.6],[-1,1] if blocked else [-.15,.15]])
+            def check(self,q,margin=.001):
+                return ['wall'] if np.all(q[:2]>=self.wall[:,0]) and np.all(q[:2]<=self.wall[:,1]) else []
+            def segment(self,start,end,margin=.001):
+                # Exact line/rectangle slab intersection, independent of the
+                # RRT and production mesh sampling. Endpoints alone are unsafe.
+                low,high=0.,1.
+                for axis in range(2):
+                    delta=end[axis]-start[axis]
+                    if abs(delta)<1e-12:
+                        if not self.wall[axis,0]<=start[axis]<=self.wall[axis,1]:return dict(safe=True,samples=2)
+                    else:
+                        a,b=sorted((self.wall[axis]-start[axis])/delta);low=max(low,a);high=min(high,b)
+                return dict(safe=bool(low>high),samples=2)
+        start=np.zeros(6);goal=start.copy();goal[0]=1
+        world=AnalyticWorld();self.assertFalse(world.segment(start,goal)['safe'])
+        proof=world.joint_transit(start,goal,max_iterations=1000,max_seconds=2)
+        self.assertTrue(proof['safe']);path=proof['waypoints']
+        np.testing.assert_array_equal(path[0],start);np.testing.assert_array_equal(path[-1],goal)
+        self.assertGreater(len(path),2)
+        for a,b in zip(path[:-1],path[1:]):self.assertTrue(world.segment(a,b)['safe'])
+        self.assertTrue(all(np.all(q>=world.model.limits[:,0]) and np.all(q<=world.model.limits[:,1]) for q in path))
+        self.assertFalse(AnalyticWorld(True).joint_transit(start,goal,max_iterations=50,max_seconds=1)['safe'])
+
     def test_ambiguous_lp_requires_definitive_retry(self):
         from types import SimpleNamespace
         from unittest.mock import patch

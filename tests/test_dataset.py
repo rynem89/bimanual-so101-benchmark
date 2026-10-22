@@ -12,12 +12,12 @@ from dataset_io import EpisodeWriter, validate_episode
 
 
 class DatasetTests(unittest.TestCase):
-    def record(self,root):
+    def record(self,root,origin=180):
         writer=EpisodeWriter(root,dict(cameras={'overview':{'quaternion_world_wxyz':[1,0,0,0]}},image_shape=[16,16,3]))
         self.assertEqual(json.loads((root/'attempt.json').read_text())['status'],'in_progress')
         rgb=np.arange(16*16*3,dtype=np.uint8).reshape(16,16,3)
         for i in range(3):
-            frame=SimpleNamespace(t_s=3+i*.05,q=np.full((2,6),i),qd=np.zeros((2,6)),
+            frame=SimpleNamespace(t_s=origin/60+i*.05,q=np.full((2,6),i),qd=np.zeros((2,6)),
                 cube=np.arange(13),pads=np.ones((2,2)),environment=np.zeros(6))
             action=np.full(12,i+.1,dtype=np.float32)
             writer.begin(frame,{'overview':rgb},action)
@@ -60,6 +60,12 @@ class DatasetTests(unittest.TestCase):
             self.assertEqual(meta['frames'],0)
             self.assertEqual(meta['incomplete_terminal_ticks'],1)
             self.assertFalse((failed.root/'trajectory.npz').exists())
+
+    def test_recording_does_not_require_global_ticks_divisible_by_three(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for origin in (180,181,182):
+                root=Path(temp)/str(origin);self.record(root,origin)
+                self.assertEqual(validate_episode(root)['frames'],3)
 
 
 if __name__=='__main__':unittest.main()

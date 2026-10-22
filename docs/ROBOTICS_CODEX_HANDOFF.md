@@ -1198,3 +1198,157 @@ FK agreement or timing measurement has been performed. Retain CPU planner;
 separate-environment runtime experiment remains incomplete and must not block
 recording/training or modify the working simulator. No unsupported-hardware or
 GPU-speedup claim follows from this source audit.
+
+
+## Verified expert coverage repairs and episode clock (2026-10-22, later session)
+
+The first source-frozen v2 batch at 2fe2a77 exposed a real recorder error:
+`full_20261022T154248994206Z.json`, `il_train_v2_4.log`, exit1. Results:
+train_v2_000 full success (3,074 frames); train_v2_001 and 003 failed in open with
+`Previous policy transition is incomplete` after one tick; train_v2_002 rejected
+receiver planning. **1/4**, not silently filtered. The successful episode has
+153.7333 control seconds, zero collisions, max2.56664rad/s /1.50240Nm.
+The next episode began at a global tick not divisible by3: first held command
+lasted one tick, then the recorder attempted a new transition. Fixed scheduling
+relative to BenchmarkEnv.policy_origin_step after EACH reset. Tests explicitly
+cover origins180,181,182,9041 and real-file recordings at each phase offset.
+Interrupted-attempt metadata/partial files were already supported. No reset or
+physical criterion was relaxed.
+
+Old fixed-jaw expert on the first four v2 held-outs:
+`expert_pilot/full_20261022T155106747997Z.json`, `il_expert_heldout4.log`, exit1:
+**1/4 full successes**, heldout_v2_002 passed. The other three established initial
+bilateral pressure, then lost the cube on lift (minheight .020m, pad forces0).
+The clock bug affects recorded transitions, not the first successful pickup,
+but subsequent legacy 20Hz first-command alignment was also imperfect. An
+attempt to interrupt this completed batch returned `No such process`; it was
+NOT interrupted, all four attempts remain in the report.
+
+### Measured grip feedback repair
+
+The expert previously enabled its existing force servo only after lift/hold.
+Added `--grip-feedback-from-lift`, retaining the fixed-jaw reference by default.
+It applies the SAME3–4N hysteresis, bounded15–30degree jaw targets and slow gains
+through lift/hold; preserves the actual updated command when transport begins.
+No material, mass, gravity, gain or actuator-limit changes. Learned policies get
+no equivalent hidden servo. On the same four held-out pickups:
+`lift_feedback_audit/pickup_20261022T160532115098Z.json`, `il_lift_feedback4.log`,
+**4/4 pickup/lift/three-second hold passed**, exit0. Min heights .073376–.073932m;
+min bilateral forces at least3.0057N. These shorter-stage successes were never
+counted as full-task training demonstrations. This run preceded final worker
+configuration; its requested limit1 was ignored and actual OPENBLAS env remained32.
+
+### Why the shell's numerical-thread limit did not work
+
+Local pinned SimulationApp source overwrites OPENBLAS_NUM_THREADS with32. Lab2.3
+also filters the supported SimulationApp limit_cpu_threads keyword out of its
+whitelist, so merely passing that keyword did NOTHING. Measured inclusive
+process CPU/wall for the first v2 receiver plan was2858.85/118.56s, reflecting
+many numerical/SDK workers, not pure planner CPU. No dependency was installed to
+control this. CPU-only NumPy and scipy.linalg now initialize before Kit with the
+requested environment, and supported public Kit args set Carbonite/TBB worker
+counts. Restore the requested numerical environment after startup. Per-process
+only: no upstream file, OS governor, driver or persistent setting modified.
+
+`thread_fix_audit/approach_...json`, `il_threads_fixed_approach.log`, exit0:
+actual carb_workers1, tbb_workers1, torch_intraop1, OPENBLAS env1. Full cold
+nominal approach12.1647wall /24.6085inclusive processCPU, physical approach passed.
+Do not compare its wall time as an identical-pose speed ratio against the
+17.32s wider-case plan. [Isaac Sim5.1 thread controls](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/reference_material/sim_performance_optimization_handbook.html)
+and [OpenBLAS startup variables](https://www.openmathlib.org/OpenBLAS/docs/runtime_variables/)
+explain the settings. The CLI `--cpu-threads` controls SDK workers separately
+from the pre-launch numerical limit;32 restores original SDK worker count.
+
+### Bounded collision-checked global transit
+
+Lift feedback changed the stable held pose and exposed a blocked HOME->receiver
+pregrasp even for nominal: `full_feedback_audit/full_20261022T161200699400Z.json`,
+exit1. Orientation-only alternatives did not clear the connecting path. They
+were removed, leaving the original model/IK API unchanged. Added a deterministic
+RRT-Connect fallback inside CollisionWorld for ONLY the blocked open-hand transit.
+Existing direct routes remain first. Five arm joints sampled; jaw fixed open;
+USD limits preserved; nearest-node steering max.25rad L2; seed101,300 iterations,
+60s operational budget (checked between edge calls). Every edge uses the same
+1mm padded, displacement-bounded segment checker with .1mm state reserve.
+Only collinear subdivision nodes are compressed; no unchecked shortcuts or
+spline smoothing. Transit turns use independent rest-to-rest quintics; the
+17-node insertion retains its separately checked C2 spline.
+
+The actual saved failing geometry yielded a four-waypoint route in two tree
+iterations,14 checked edges /4,545 samples /7.3504s (`il_receiver_rrt_probe.json`).
+Independent analytic slab/rectangle tests verify the returned detour and no-path
+budget failure. **31 CPU tests passed**,38.480s (`il_rrt_full_tests.log`).
+
+First actual RRT run reached the receiver with no collisions but correctly
+FAILED right-only transfer: `full_feedback_rrt_audit/full_20261022T162818010552Z.json`.
+Right pads ~3.08N, cubeheight .1769m, but open donor fixed finger retained .271N.
+Opening angle45degrees is not proof of release. The independent evaluator's
+handover flag remained false. No success was claimed from the safe geometric
+plan or the right-hand forces alone.
+
+### Contact-based donor release and final full regression
+
+The calibrated fixed pad lies on negative TCP X. If donor contact remains
+above .05N after jaw opening, and receiver bilateral support/height are already
+adequate, plan a4/8/12mm outward-normal donor movement. Endpoint must clear Cube
+and all other geometry. Only this small departing finger segment allows initial
+Cube contact, as in the existing first donor-departure check; all other pairs
+retain normal checks. At most two measured attempts. Then require the ORIGINAL
+three-second right-only hold: both right forces>.05N, donor forces<.05N,
+cubeheight>=.15m. No forced success flag, contact exception in evaluator or
+physical attachment. Offline first candidate4mm:63 intermediate samples,
+.093mm IK position error/.143degree full orientation error, safe.
+
+```bash
+python scripts/run_manipulation.py --headless --stage full --motion-mode continuous --expert-hz 20 --grip-feedback-from-lift --episodes 3 --output-dir outputs/controller/full_clearance_audit
+```
+
+`full_clearance_audit/full_20261022T163854656945Z.json`, `il_full_clearance3.log`,
+**exit0, 3/3 all expert and independent stages**, zero collisions. Each156.1833s
+including3s reset, versus209.1667s old reference (25.3% shorter); the previous
+narrow continuous mode was150.65s. One checked4mm normal departure per episode;
+right-only minimum pads3.0700/3.1918N; max donor pads0/0N. Peak speed2.01100rad/s,
+effort1.34962Nm; bin floor support>=.4904994N. Same physical metrics reproduced
+in all three runs. These verify the new complete deterministic control mode,
+not broad robustness. All seven source SHA256 hashes were compared with current
+files and matched exactly before commit. Baseline05a0c13 remains in history.
+
+First wall184.722s included120.347s fresh episode planning (pickup separately
+logged12.26s). Warm repeats64.309/64.541s, each~1.47s normal-clearance planning.
+Worker limit1 can reduce execution throughput even while reducing numerical
+thread oversubscription; an eight-worker matched-cache comparison is pending.
+Do not advertise a universal wall-time speedup. Normal-departure frames were
+not yet included in transfer_trace; its sampled5.67mm dip is incomplete during
+that gap and must NOT be called a certified full transient maximum. Continuous
+trace collection will be corrected separately. Independent safety evaluation
+DID inspect every physical tick, including normal departure.
+
+Final control CPU regression31/31 in38.526s (`il_control_commit_tests.log`),
+including RRT exact-edge fixture, no-path bound, reset-relative clocks, actual
+recording chronology/terminal guards, geometry/LP equivalence and evaluator.
+
+### Actual 1,000-update learned pilots
+
+Both official methods used the SAME two calibrated interim demonstrations
+(5,858frames) and seed701/batch16/1,000updates, ImageNet ResNet18; constant
+AdamW lr1e-4/clip10. ACT18,725,388parameters,389.972s total, loss79.6424->.216413.
+Diffusion40,901,452parameters,439.091s total, noise loss1.15133->.0590476.
+These different loss definitions are not quality rankings.
+
+ACT `full_20261022T154252429358Z.json`, `il_act_initial_eval5.log`: **0/1 nominal
++0/4 held-out**, all300s timeouts, zero pickup stages. Diffusion
+`diffusion_pilot/full_...json`, `il_diffusion_initial_eval5.log`: **0/1 +0/4**;
+actuator limits at1.1833/.8833s; left gripper/table contact at.2167s; right
+wrist/jaw contacts at.9/1.1s. All failures counted, exit1. The earlier Diffusion
+server did not seed its denoising RNG per episode; these are stochastic pilot
+observations, not reproducible final comparisons. ACT inference uses latent0
+and eval mode. A versioned, seeded reset/model-identity handshake remains needed.
+The v2 held-outs are a distribution shift from the two original successful
+training poses, further limiting interpretation. These pilots verify working
+model-to-physics interfaces and illustrate insufficient data/training; NOT a
+serious method ranking, learned task success or the requested30-trial benchmark.
+
+Data expansion must use the corrected clock and improved expert AFTER source
+commit. Preserve failed initial batches and report their separate fractions.
+Human visual confirmation is needed for the new RRT/normal-departure behavior;
+original continuous GUI remains open until replaced with the verified revision.

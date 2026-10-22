@@ -4,8 +4,8 @@ A simulation-first robotics benchmark: the left five-axis SO-101 picks up a
 40 mm cube, transfers it in mid-air to the right SO-101, and the right arm
 releases it into a basket. Both arms retreat, the cube settles on the basket
 floor, and the scene resets automatically. The reference policy uses geometry,
-IK and contact feedback. The next active milestone is an isolated LeRobot
-imitation-learning pipeline; no learned manipulation success is claimed.
+IK and contact feedback. The isolated LeRobot pipeline records, trains and evaluates official ACT and
+Diffusion policies; no learned manipulation success is claimed.
 
 The original complete sequence passed **3/3 repeated physics episodes** at
 `9af7dc7`; the user visually confirmed it in Isaac Sim. The benchmark-hardening
@@ -35,7 +35,7 @@ export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 python --version  # Python 3.11.16
 
 # Full task with simulator window; final scene stays open for inspection.
-python scripts/run_manipulation.py --stage full --motion-mode continuous
+python scripts/run_manipulation.py --stage full --motion-mode continuous --expert-hz 20 --grip-feedback-from-lift
 
 # Automated complete episodes with the same physics/controller, no renderer.
 python scripts/run_manipulation.py --headless --stage full --handover-mode staged --episodes 3
@@ -192,7 +192,7 @@ python -m unittest discover -s tests -v
 python scripts/so101_planning.py --profile --output outputs/controller/profile_final.json
 ```
 
-Current CPU regression: **28 tests passed**, including independent evaluator
+Current CPU regression: **31 tests passed**, including independent evaluator
 false-positive/negative cases, timeout/reset, FK/IK, triangle containment,
 rotated/acute convex envelopes, ambiguous LP status, trajectory derivatives and
 cache invalidation. Complete approach tests compare every optimized hull query
@@ -232,6 +232,28 @@ below is new. Installation history and pinned-path details stay in the
 handoff. cuRobo and MoveIt are assessed there, not installed dependencies.
 
 
+
+The expanded distribution exposed two additional expert limitations. The optional
+`--grip-feedback-from-lift` applies the existing bounded contact servo during
+lift/hold: **4/4 held-out pickup/lift/hold checks passed**, versus 1/4 full-task
+attempts reaching those stages with the fixed jaw target. New receiver transits
+use a bounded, fixed-seed **RRT-Connect** fallback when the direct joint line
+crosses the cube. Every edge uses the original dense collision checks; only
+collinear subdivisions are removed. RRT turns execute as separate quintic moves;
+the checked insertion retains its C2 spline. No collision margins were reduced.
+After jaw opening, retained donor contact triggers a checked 4–12 mm move away
+along the fixed pad's negative TCP-X normal, followed by the unchanged three-second
+right-only support gate. **Three full regressions passed**, all independent gates true and zero forbidden
+contacts, each 156.18 simulated seconds. The original fixed-jaw expert remains
+available by omitting the feedback flag; baseline `05a0c13` is preserved in Git.
+
+The launcher previously replaced the shell's `OPENBLAS_NUM_THREADS=1` with 32.
+CPU-only NumPy/SciPy initialization now precedes Kit startup, and public Kit
+arguments set per-process worker limits (`--cpu-threads 1`, default). Reports
+verify actual Carbonite/TBB counts and the numerical environment. No OS setting,
+driver or installed simulator package changed. `--cpu-threads 32` restores the
+original Kit worker count; numerical threads follow the pre-launch environment.
+
 ## Demonstrations and official LeRobot policies
 
 The end-to-end **smoke pipeline works**: physical 20 Hz expert recording,
@@ -240,7 +262,10 @@ Diffusion GPU training, saved/reloaded checkpoints and real simulator evaluation
 This is not yet a successful learned manipulation benchmark. Initial 20-update
 ACT: **0/1**, 300 s timeout, no pickup. Diffusion: **0/1**, actuator-limit failure
 at 0.05 s with two collision violations. These tiny training runs test plumbing;
-their losses are not comparable success metrics. Larger-data results remain pending.
+their losses are not comparable success metrics. Larger-data results remain pending. A subsequent 1,000-update run on two varied
+demonstrations also scored **0/1 nominal + 0/4 held-out for both methods**:
+ACT timed out, Diffusion violated actuator/contact limits. This is a small-data
+diagnostic, not a credible method ranking.
 
 Two fixed 224×224 RGB cameras use Isaac Lab 2.3 `CameraCfg`: overhead eye
 `(0,-.12,.92)` m and front eye `(0,.72,.56)` m, with targets in
@@ -257,7 +282,9 @@ physics indices and timestamps; PNGs; `episode.json`; and a separate
 `privileged.json` for object/contact diagnostics. Left six joints precede right
 six: pan, lift, elbow, wrist flex, wrist roll, jaw. Velocities use the same order.
 Frames describe state **before** the action held for the next three ticks.
-Partial terminal transitions are excluded and explicitly counted; final physical
+Attempt metadata is saved immediately and partial trajectories every 200 frames
+so interrupted generation is visible. Partial terminal transitions are excluded
+and explicitly counted; final physical
 state is retained separately. Failed attempts are kept and counted, but excluded
 from successful demonstration conversion. Validation rejects missing RGB,
 nonfinite/misaligned targets and invalid camera calibration. A local v3 dataset
@@ -269,7 +296,10 @@ found nearby solutions but correctly retained unsafe-path rejection. Reducing th
 pre-grasp height and receiver orientation alternatives did not resolve the
 failures; these were not adopted. The versioned inward candidate distribution
 uses X offsets ±10 mm, Y offsets −12 to −4 mm, yaw ±6°. **12/12 independent offline
-approach draws passed complete path checks**; full physical coverage is pending.
+approach draws passed complete path checks**; the first physical source-frozen four-case
+batch had one success, two recorder-clock failures and one receiver-plan
+rejection. All remain counted. The recorder clock now restarts relative to each
+reset, including resets at global ticks not divisible by three.
 The manifest fixes 32 training, 8 validation and 30 held-out cases with separate
 seeds. A geometric pass is not a manipulation success; all physical failures
 must remain in the denominator. The fixed nominal and −1° regressions remain
@@ -281,7 +311,7 @@ Use separate shells/environments:
 # Original simulator environment; GUI remains the default.
 python scripts/run_manipulation.py --stage full --motion-mode continuous \
   --cases-file configs/task_distribution.json --split train \
-  --record-dir datasets/raw_train_v2
+  --expert-hz 20 --grip-feedback-from-lift --record-dir datasets/raw_train_v2
 
 # A different shell: isolated training, never activate over a running simulator.
 source /home/rynem8/miniforge3/etc/profile.d/conda.sh

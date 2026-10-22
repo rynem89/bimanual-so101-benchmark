@@ -218,6 +218,12 @@ def quintic(u):
     return u**3 * (10 - 15*u + 6*u*u)
 
 
+def policy_boundary(physics_step: int, episode_start_step: int, decimation: int = 3) -> bool:
+    """20 Hz phase restarts after every reset, independent of global tick count."""
+    if physics_step<episode_start_step or decimation<1:raise ValueError('Invalid policy clock')
+    return (physics_step-episode_start_step)%decimation==0
+
+
 def trajectory_limits(delta, duration):
     """Exact peak nominal derivatives for a rest-to-rest quintic segment."""
     delta = np.abs(delta)

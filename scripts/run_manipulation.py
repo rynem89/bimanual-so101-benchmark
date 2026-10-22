@@ -34,6 +34,7 @@ parser.add_argument('--suite',choices=('nominal','perturb','negative'),default='
 parser.add_argument('--case',default='nominal',help='Fixed cube pose from benchmark_core.EVALUATION_CASES')
 parser.add_argument('--record-dir',type=Path,help='Write 20 Hz RGB expert attempts, successes and failures')
 parser.add_argument('--expert-hz',type=int,choices=(20,60),default=60)
+parser.add_argument('--grip-feedback-from-lift',action='store_true',help='Apply the existing bounded force servo during lift/hold as well as transport')
 parser.add_argument('--cases-file',type=Path,help='Explicit named cube cases and split; all cases are attempted')
 parser.add_argument('--split',choices=('train','validation','heldout'),default='train')
 parser.add_argument('--policy-socket',type=Path,help='20 Hz learned policy in the isolated Python 3.12 environment')
@@ -49,12 +50,13 @@ if options.record_dir or options.policy_socket:
     if '--enable_cameras' not in rest:rest.append('--enable_cameras')
 sys.argv=[sys.argv[0],*rest]
 import inspect_task_layout as layout
+import carb
 import numpy as np
 from scipy.spatial.transform import Rotation
 from benchmark_env import BenchmarkEnv, configure_cameras
-from benchmark_core import EVALUATION_CASES, JointPath, quintic, trajectory_limits, transfer_metrics
+from benchmark_core import EVALUATION_CASES, JointPath, policy_boundary, quintic, trajectory_limits, transfer_metrics
 from so101_model import SO101Model, calibrate, jsonable, transform, apply, box_mesh, LINK_NAMES
-from so101_planning import (plan_pickup, plan_lift, plan_transport, plan_receiver, plan_placement,
+from so101_planning import (plan_pickup, plan_lift, plan_transport, plan_receiver, plan_donor_clearance, plan_placement,
                            transport_fingerprint, CollisionWorld, fingerprint, valid_cache, CACHE_STATE_ATOL)
 
 
@@ -231,10 +233,11 @@ class Episode:
         self.left_target=target.copy()
         action=np.stack([target,self.right_target])
         if options.expert_hz==20:
-            if self.env.total_steps%3==0 or self.held_action is None:
+            if policy_boundary(self.env.total_steps,self.env.policy_origin_step):
                 self.held_action=action.copy()
                 if self.writer:
                     self.writer.begin(self.env.frame,self.env.capture_images(),self.held_action)
+            if self.held_action is None:raise RuntimeError('Expert policy clock must start after reset')
             action=self.held_action
         before=self.env.total_steps
         try:frame=self.env.advance(action,evaluate=check)
@@ -376,7 +379,8 @@ class Episode:
                 cameras=self.env.camera_metadata(),image_shape=[224,224,3],motion_mode=options.motion_mode,split=self.split,
                 source_revision=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
                 source_sha256=self.source_sha256,
-                physics_hz=60,expert_command_hz=20,controller='privileged geometric expert'))
+                physics_hz=60,expert_command_hz=20,controller='privileged geometric expert',
+                grip_feedback_from_lift=options.grip_feedback_from_lift))
             result['recording_dir']=str(root)
         if options.stage=='model':
             before=self.env.total_steps
@@ -446,6 +450,7 @@ class Episode:
             lift_path.write_text(json.dumps(jsonable(lift),indent=2))
         result['lift_plan']=lift
         if not lift['safe']:raise RuntimeError(f'Lift path rejected: {lift}')
+        if options.grip_feedback_from_lift:self.active_grips['left']=closed[-1]
         start=self.measured_q();end=np.array(lift['lift_q'])
         result['lift_fk']=self.move(start,end,'lift',contact=True,jaw_target=closed[-1])
         target=end.copy();target[-1]=closed[-1]
@@ -468,7 +473,8 @@ class Episode:
         result['hold_cube_m']=positions[-1]
         result['hold_q_rad']=self.measured_q()
         if positions[:,2].min()<.06 or result['hold_relative_drift_mm']>3 or min(result['hold_min_pad_force_N'])<.05:
-            raise RuntimeError(f'Lift/hold failed: {result}')
+            raise RuntimeError(f'Lift/hold failed: min_height={positions[:,2].min():.6f}m, '
+                               f'drift={result["hold_relative_drift_mm"]:.3f}mm, pads={result["hold_min_pad_force_N"]}N')
         result['pickup_success']=True;result['lift_success']=True
         if options.stage in ('transport','handover','full'):
             local=self.cube_in_tcp();start=self.measured_q()
@@ -485,7 +491,7 @@ class Episode:
             if transport['selected'] is None:raise RuntimeError('No validated transport path')
             end=np.array(transport['selected']['left_q'])
             self.transport_reference=local
-            self.active_grips['left']=closed[-1]
+            self.active_grips.setdefault('left',closed[-1])
             result['transport_fk']=self.move(start,end,'transport',contact=True,jaw_target=closed[-1])
             target=end.copy();target[-1]=closed[-1]
             self.phase='handover_hold'
@@ -534,11 +540,13 @@ class Episode:
         result['receiver_plan']=receiver
         if receiver['selected'] is None:raise RuntimeError('Receiver path rejected; see receiver_plan.json')
         waypoints=[np.array(q) for q in receiver['selected']['waypoints']]
-        phases=['right_open','right_pregrasp']+[f'right_approach_{i}' for i in range(len(waypoints)-3)]
-        for i,phase in enumerate(phases[:2] if options.motion_mode=='continuous' else phases):
+        approach_start=receiver['selected'].get('approach_start_index',2)
+        phases=['right_open']+[f'right_transit_{i}' for i in range(approach_start-1)]
+        phases += [f'right_approach_{i}' for i in range(len(waypoints)-1-approach_start)]
+        for i,phase in enumerate(phases[:approach_start] if options.motion_mode=='continuous' else phases):
             result[phase+'_fk']=self.move_right(waypoints[i],waypoints[i+1],phase)
         if options.motion_mode=='continuous':
-            result['right_approach_fk']=self.follow(waypoints[2:],'right','right_cartesian_approach',.12)
+            result['right_approach_fk']=self.follow(waypoints[approach_start:],'right','right_cartesian_approach',.12)
         self.contact_arms.add('Right_Robot')
         self.phase='right_close'
         stable=0
@@ -574,6 +582,16 @@ class Episode:
         self.active_grips['right']=self.right_target[-1]
         self.max_transport_slip_m=0.;self.max_transport_rotation_deg=0.
         self.move(release_start,release,'left_release',contact=True)
+        result['donor_clearance_attempts']=[]
+        for attempt in range(2):
+            if max(self.pad_forces['left'])<.05:break
+            if min(self.pad_forces['right'])<.6 or self.env.frame.cube[2]<.15:
+                raise RuntimeError('Receiver cannot support a donor clearance move')
+            clearance=compute_plan(plan_donor_clearance,self.model,self.measured_q(),self.measured_q('right'),self.env.frame.cube_pose())
+            result['donor_clearance_attempts'].append(clearance)
+            if not clearance['safe']:raise RuntimeError('No checked donor fixed-pad clearance path')
+            self.move(self.measured_q(),np.array(clearance['goal_q']),f'donor_normal_clearance_{attempt}',
+                      contact=True,jaw_target=np.pi/4)
         self.phase='right_only_hold'
         minimum_right=np.full(2,np.inf);maximum_left=np.zeros(2);heights=[]
         for _ in range(round(3/self.dt)):
@@ -756,6 +774,11 @@ def main():
             'handover_mode':options.handover_mode,'source_revision':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
             'motion_mode':options.motion_mode,'viewer_delay_s':options.viewer_delay,
             'expert_command_hz':options.expert_hz,
+            'grip_feedback_from_lift':options.grip_feedback_from_lift,
+            'runtime_threads':dict(requested_worker_limit=layout.args.cpu_threads,openblas_env=os.environ.get('OPENBLAS_NUM_THREADS'),
+                                  torch_intraop=layout.torch.get_num_threads(),
+                                  carb_workers=carb.settings.get_settings().get('/plugins/carb.tasking.plugin/threadCount'),
+                                  tbb_workers=carb.settings.get_settings().get('/plugins/omni.tbb.globalcontrol/maxThreadCount')),
             'controller':'learned' if options.policy_socket else ('replay' if options.replay else 'expert'),
             'cases_document':cases_document,'policy_socket':str(options.policy_socket) if options.policy_socket else None,
             'replay':str(options.replay) if options.replay else None,
@@ -845,7 +868,8 @@ def main():
                         result['failure_observation']=dict(cube=frame.cube,pads_N=frame.pads,environment_N=frame.environment,q_rad=frame.q)
                     result['independent_evaluation']=episode.env.evaluator.report()
                     result['failure_category']=(episode.env.evaluator.failure or
-                        {'reset':'reset_prerequisite','close':'failed_grasp','right_close':'failed_transfer'}.get(episode.phase)
+                        {'reset':'reset_prerequisite','close':'failed_grasp','right_close':'failed_transfer',
+                         'hold':'failed_lift','lift':'failed_lift'}.get(episode.phase)
                         or ('planning_rejection' if any(word in error.lower() for word in ('path','planning','collision','unsafe')) else 'controller_guard'))
                     result['transfer_trace']=list(episode.transfer_trace)
                     result['transfer_metrics']=transfer_metrics(episode.transfer_trace)
