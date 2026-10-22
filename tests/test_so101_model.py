@@ -4,7 +4,7 @@ import sys
 import unittest
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from so101_model import SO101Model,calibrate,box_mesh,mesh_box_overlap,triangle_box_overlap,intersect_hulls,transform
+from so101_model import SO101Model,calibrate,box_mesh,mesh_box_overlap,triangle_box_overlap,intersect_hulls,transform,_lp_intersection
 
 
 class GeometryTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class GeometryTests(unittest.TestCase):
         def presolve_unknown(*args,**kwargs):
             return unknown if kwargs['method']=='highs' else original(*args,**kwargs)
         with patch.object(so101_model,'linprog',side_effect=presolve_unknown):
-            self.assertFalse(intersect_hulls(box,np.eye(4),box,transform([2,0,0],np.eye(3))))
+            self.assertFalse(_lp_intersection(box,np.eye(4),box,transform([2,0,0],np.eye(3)),.001))
             self.assertTrue(intersect_hulls(box,np.eye(4),box,np.eye(4)))
         with patch.object(so101_model,'linprog',return_value=unknown):
             with self.assertRaisesRegex(RuntimeError,'Collision LP unresolved'):
@@ -39,6 +39,25 @@ class GeometryTests(unittest.TestCase):
         self.assertTrue(mesh_box_overlap(mesh.triangles,np.zeros(3),np.ones(3)*.1))
         self.assertFalse(mesh_box_overlap(mesh.triangles,np.array([1.,0,0]),np.ones(3)*.1))
         self.assertTrue(mesh_box_overlap(mesh.triangles,np.array([.55,0,0]),np.ones(3)*.1))
+
+    def test_prefilter_matches_lp_random_rotations_and_inflated_acute_corners(self):
+        from scipy.spatial import ConvexHull
+        from scipy.spatial.transform import Rotation
+        from so101_model import Mesh
+        points=np.array([[0,0,0],[1,0,0],[.999,.002,0],[.999,.001,.02]])
+        hull=ConvexHull(points)
+        acute=Mesh('acute','acute',points[hull.simplices],points,hull.equations)
+        box=box_mesh(np.zeros(3),np.full(3,.02),'box')
+        rng=np.random.default_rng(101)
+        # Acute half-space intersections expand further than margin/2 along
+        # some directions; a simple original-vertex radius test is unsound.
+        for _ in range(60):
+            pose=transform(rng.uniform([-.05,-.03,-.03],[1.05,.03,.05]),Rotation.random(random_state=rng).as_matrix())
+            self.assertEqual(intersect_hulls(acute,np.eye(4),box,pose,.002),_lp_intersection(acute,np.eye(4),box,pose,.002))
+        unit=box_mesh(np.zeros(3),np.ones(3),'unit')
+        for gap in (-1e-5,0.,1e-5):
+            pose=transform([1.002+gap,0,0])
+            self.assertEqual(intersect_hulls(unit,np.eye(4),unit,pose,.002),_lp_intersection(unit,np.eye(4),unit,pose,.002))
 
 
 class ModelTests(unittest.TestCase):
@@ -71,6 +90,39 @@ class ModelTests(unittest.TestCase):
         rows=self.calibration['surface_checks']
         self.assertTrue(rows[0]['surface_intersections_with_42mm_box'])
         self.assertEqual(next(r for r in rows if r['angle_deg']==45)['surface_intersections_with_42mm_box'],[])
+
+    def test_complete_approach_matches_original_lp_at_every_query(self):
+        from unittest.mock import patch
+        import so101_planning as planning
+        count=0
+        def compare(*args,**kwargs):
+            nonlocal count
+            actual=intersect_hulls(*args,**kwargs)
+            self.assertEqual(actual,_lp_intersection(*args,**kwargs))
+            count+=1
+            return actual
+        with patch.object(planning,'intersect_hulls',side_effect=compare):
+            plan=planning.plan_pickup(self.model)
+        self.assertTrue(plan['waypoints'])
+        samples=sum(check['samples'] for check in plan['segment_checks'])
+        self.assertGreaterEqual(samples,3794)
+        self.assertGreater(count,1900)
+        print(f'Collision equivalence: {count} LP queries, {samples} path samples',flush=True)
+
+    def test_cache_invalidates_geometry_calibration_settings_and_changed_state(self):
+        from so101_planning import fingerprint,valid_cache
+        key=fingerprint(self.model);q=np.zeros(6)
+        saved=dict(fingerprint=key,q=q.tolist())
+        self.assertTrue(valid_cache(saved,key,q=q+1e-6))
+        self.assertFalse(valid_cache(saved,key,q=q+.006))
+        self.assertFalse(valid_cache(saved,key,q=np.zeros(5)))
+        self.assertFalse(valid_cache(saved,key+'changed-margin',q=q))
+        self.model.tcp[0,3]+=.001
+        try:self.assertNotEqual(fingerprint(self.model),key)
+        finally:self.model.tcp[0,3]-=.001
+        mesh=self.model.meshes[0];mesh.triangles[0,0,0]+=.001
+        try:self.assertNotEqual(fingerprint(self.model),key)
+        finally:mesh.triangles[0,0,0]-=.001
 
 
 if __name__=='__main__':unittest.main()

@@ -13,12 +13,35 @@ import inspect
 from pathlib import Path
 from so101_model import apply, box_mesh, intersect_hulls, mesh_box_overlap
 
+CACHE_STATE_ATOL=1e-5
+CACHE_MOTION_RESERVE_M=.0001
+
+
+def valid_cache(saved, key, **state):
+    """Fail closed on stale, absent, malformed or materially changed context.
+
+    Six 1e-5-radian joint differences at a 0.6 m radius plus rigid-transform
+    entry differences move relevant geometry by <0.1 mm in this scene. Segment
+    sampling explicitly reserves that distance; margins are not reduced.
+    """
+    if saved.get('fingerprint')!=key:return False
+    for name,current in state.items():
+        previous=np.asarray(saved.get(name,[]));current=np.asarray(current)
+        if previous.shape!=current.shape or not np.isfinite(previous).all():return False
+        if not np.allclose(previous,current,atol=CACHE_STATE_ATOL,rtol=0):return False
+    return True
+
 
 def fingerprint(model):
     """Invalidate generated plans after any asset/model/planner change."""
     h=hashlib.sha256()
-    for path in (Path(model.asset),Path(__file__).with_name('so101_model.py')):
+    for path in (Path(model.asset),Path(__file__).with_name('so101_model.py'),Path(__file__)):
         h.update(path.read_bytes())
+    h.update(Path(__file__).with_name('inspect_task_layout.py').read_bytes())
+    h.update(model.tcp.tobytes());h.update(model.base.tobytes());h.update(model.limits.tobytes())
+    # Hash resolved geometry, including meshes supplied by referenced USDs.
+    for mesh in model.meshes:
+        h.update(mesh.triangles.tobytes());h.update(mesh.planes.tobytes())
     for routine in (CollisionWorld,plan_pickup):
         h.update(inspect.getsource(routine).encode())
     return h.hexdigest()
@@ -84,24 +107,28 @@ class CollisionWorld:
         # Radius 0.6 m bounds every downstream point of this <0.5m robot.
         # Maximum point movement from the nearest sample <= margin/2. This
         # covers nominal joint-linear motion, not tracking error or PhysX hulls.
-        count = max(2, int(np.ceil(.6*np.abs(end-start).sum()/margin))+1)
+        # Retain 0.1 mm for the bounded state difference allowed by plan caches.
+        spacing=margin-CACHE_MOTION_RESERVE_M
+        if spacing<=0:raise ValueError('Margin must exceed cache motion reserve')
+        count = max(2, int(np.ceil(.6*np.abs(end-start).sum()/spacing))+1)
         for i,t in enumerate(np.linspace(0,1,count)):
             q = start+(end-start)*t
             faults = self.check(q,margin,cube_contact)
             if faults:
                 return {'safe':False,'samples':count,'failed_sample':i,'q':q,'faults':faults}
-        return {'safe':True,'samples':count}
+        return {'safe':True,'samples':count,'cache_motion_reserve_m':CACHE_MOTION_RESERVE_M}
 
 
-def plan_pickup(model, cube=(-.34,-.04,.02)):
+def plan_pickup(model, cube=(-.34,-.04,.02), rotation=None):
     """Find reachable pregrasp/grasp with aligned cube faces and validate travel."""
-    world = CollisionWorld(model,cube)
+    rotation=np.eye(3) if rotation is None else rotation
+    world = CollisionWorld(model,cube,cube_rotation=rotation)
     home = np.zeros(6)
     opened = home.copy(); opened[-1] = np.deg2rad(45)
     pretarget = np.array(cube)+[0,0,.035]
     grasptarget = np.array(cube)+[0,0,.002]
-    pres = model.ik(pretarget,rotation=np.eye(3),seeds=12)
-    grasps = model.ik(grasptarget,rotation=np.eye(3),seeds=12)
+    pres = model.ik(pretarget,rotation=rotation,seeds=12)
+    grasps = model.ik(grasptarget,rotation=rotation,seeds=12)
     evidence = {'pre_candidates':pres,'grasp_candidates':grasps,'rejections':[]}
     for pre in pres:
         faults=world.check(pre['q'])
@@ -117,26 +144,27 @@ def plan_pickup(model, cube=(-.34,-.04,.02)):
     return {'waypoints':[], 'ik':evidence}
 
 
-def plan_lift(model, grasp_q, held=False):
+def plan_lift(model, grasp_q, held=False, cube=(-.34,-.04,.02), cube_rotation=None, cube_in_tcp=None, target=None):
     """Plan a 58 mm lift with achievable tilt and a predicted payload envelope.
 
     The payload transform is a planning assumption, never a simulator attachment.
     Execution must independently verify bilateral force and object following.
     """
-    world=CollisionWorld(model)
+    world=CollisionWorld(model,cube,cube_rotation=cube_rotation)
     closed=np.array(grasp_q).copy()
     if not held:closed[-1]=np.deg2rad(-5)
     closure=world.segment(np.array(grasp_q),closed,cube_contact=True)
     if not closure['safe']:
         return {'safe':False,'failure':'closure_collision','check':closure}
     candidates=[]
+    target=np.asarray(cube)+[0,0,.06] if target is None else np.asarray(target)
     for heading in (-19.,-18.5,-19.5):
         h=np.deg2rad(heading);tilt=np.deg2rad(15)
         direction=[np.sin(h)*np.sin(tilt),np.cos(h)*np.sin(tilt),-np.cos(tilt)]
-        candidates.extend(model.ik([-.34,-.04,.08],approach=direction,opening_deg=np.rad2deg(closed[-1]),reference=closed,seeds=3))
+        candidates.extend(model.ik(target,approach=direction,opening_deg=np.rad2deg(closed[-1]),reference=closed,seeds=3))
     candidates.sort(key=lambda x:np.linalg.norm(x['q']-closed))
     rejections=[]
-    payload=box_mesh(np.array([0,0,-.002]),np.full(3,.04),'payload')
+    payload=box_mesh(np.array([0,0,-.002]) if cube_in_tcp is None else np.zeros(3),np.full(3,.04),'payload')
     for candidate in candidates:
         if candidate['limit_margin_deg']<5:
             continue
@@ -148,7 +176,10 @@ def plan_lift(model, grasp_q, held=False):
         # Same sample spacing as nominal robot path; payload is under 0.6 m
         # downstream of each joint. Extra 3 mm obstacle margin covers seating.
         for t in np.linspace(0,1,check['samples']):
-            q=closed+t*(end-closed);pose=model.tcp_pose(q);vertices=apply(pose,payload.vertices)
+            q=closed+t*(end-closed);pose=model.tcp_pose(q)
+            if cube_in_tcp is not None:
+                pose=pose@cube_in_tcp
+            vertices=apply(pose,payload.vertices)
             if vertices[:,2].min()<-.0002:
                 faults.append('predicted_payload_table');break
             for mesh,verts,mt in model.world_meshes(q)+world.right:
@@ -162,7 +193,7 @@ def plan_lift(model, grasp_q, held=False):
             if faults:break
         if not faults:
             return {'safe':True,'closed_q':closed,'lift_q':end,'closure_check':closure,'lift_check':check,
-                    'ik':candidate,'target_world_m':[-.34,-.04,.08],'rejections':rejections}
+                    'ik':candidate,'target_world_m':target,'rejections':rejections}
         rejections.append({'faults':faults})
     return {'safe':False,'failure':'no_lift_candidate','rejections':rejections}
 
@@ -386,3 +417,37 @@ def plan_placement(model, left_q, right_q, cube_in_right_tcp):
                                     'predicted_release_cube_pose':pose,'ik':candidate}
                 return result
     return result
+
+
+def profile_cpu(output):
+    """Reproducible geometry/IK/collision profile, without a Kit/GPU launch."""
+    import cProfile
+    import pstats
+    import time
+    from so101_model import SO101Model,calibrate,jsonable
+    started=time.perf_counter();model=SO101Model();geometry_s=time.perf_counter()-started
+    started=time.perf_counter();calibrate(model);calibration_s=time.perf_counter()-started
+    profiler=cProfile.Profile();started=time.perf_counter();cpu=time.process_time()
+    plan=profiler.runcall(plan_pickup,model)
+    report={'geometry_preprocessing_s':geometry_s,'calibration_s':calibration_s,
+            'cold_planning_wall_s':time.perf_counter()-started,'cold_planning_cpu_s':time.process_time()-cpu,
+            'samples':sum(c['samples'] for c in plan['segment_checks']),
+            'source_fingerprint':fingerprint(model),'functions':{}}
+    for (file,line,name),(cc,nc,tt,ct,_) in pstats.Stats(profiler).stats.items():
+        if name in ('fk','ik','intersect_hulls','_lp_intersection','linprog','world_meshes','check','segment'):
+            report['functions'][Path(file).name+':'+name]={'calls':nc,'self_s':tt,'inclusive_s':ct}
+    started=time.perf_counter();warm=plan_pickup(model)
+    report['warm_geometry_revalidation_wall_s']=time.perf_counter()-started
+    report['persisted_plan_cache_used']=False
+    if not plan['waypoints'] or not warm['waypoints']:raise RuntimeError('Profile task was not feasible')
+    output.parent.mkdir(parents=True,exist_ok=True)
+    output.write_text(__import__('json').dumps(jsonable(report),indent=2))
+    print(__import__('json').dumps(report,indent=2))
+
+
+if __name__=='__main__':
+    import argparse
+    parser=argparse.ArgumentParser(description='Offline SO-101 planning CPU profile; use bundled USD paths from README.')
+    parser.add_argument('--profile',action='store_true',required=True)
+    parser.add_argument('--output',type=Path,default=Path('outputs/controller/profile_after.json'))
+    profile_cpu(parser.parse_args().output)

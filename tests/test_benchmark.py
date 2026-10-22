@@ -1,0 +1,120 @@
+"""Policy-independent evidence, failure gates and nominal trajectory regression."""
+from pathlib import Path
+import ast
+import copy
+import sys
+import unittest
+import numpy as np
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
+from benchmark_core import Frame,TaskEvaluator,TaskSpec,quintic,trajectory_limits,transfer_metrics
+
+
+def frame(position=(-.34,-.04,.02)):
+    cube=np.r_[position,[1.,0,0,0],np.zeros(6)]
+    q=np.zeros((2,6));q[:,-1]=np.pi/4
+    tcp=np.repeat(np.eye(4)[None],2,axis=0)
+    return Frame(0.,cube,q,np.zeros_like(q),q.copy(),np.zeros_like(q),np.zeros_like(q),
+                 tcp,tcp.copy(),np.zeros((2,3)),np.zeros((2,2)),np.array([.4905,0,0,0,0,0]),())
+
+
+class EvaluationTests(unittest.TestCase):
+    def setUp(self):
+        self.e=TaskEvaluator(np.tile([-np.pi,np.pi],(6,1)),[])
+        self.e.reset(frame(),np.array([-.34,-.04]))
+
+    def hold(self,f,count=180):
+        for _ in range(count):self.e.update(f)
+
+    def acquire_and_transfer(self):
+        f=frame((-.34,-.04,.073));f.environment[:]=0;f.pads[0]=2;f.q[0,-1]=.38
+        self.hold(f);self.assertTrue(self.e.flags['lift'])
+        f=frame((0,-.27,.17));f.environment[:]=0;f.pads[1]=2;f.q[1,-1]=.38
+        self.hold(f);self.assertTrue(self.e.flags['handover'])
+
+    def test_complete_task_requires_all_observed_stages(self):
+        f=frame((.34,-.04,.03));f.environment[:]=[0,.4905,0,0,0,0]
+        self.hold(f);self.assertFalse(self.e.success)
+        self.acquire_and_transfer();self.hold(f,179);self.assertFalse(self.e.success)
+        self.hold(f,1);self.assertTrue(self.e.success)
+        self.e.reset(frame(),np.array([-.34,-.04]));self.assertFalse(any(self.e.flags.values()))
+
+    def test_floating_fast_or_held_cube_cannot_pass_placement(self):
+        for fault in ('floating','fast','held','wall'):
+            with self.subTest(fault=fault):
+                self.setUp();self.acquire_and_transfer()
+                f=frame((.34,-.04,.03));f.environment[:]=[0,.4905,0,0,0,0]
+                if fault=='floating':f.environment[1]=0
+                if fault=='fast':f.cube[7]=.02
+                if fault=='held':f.pads[1]=1;f.q[1,-1]=.38
+                if fault=='wall':f.cube[0]=.405
+                self.hold(f);self.assertFalse(self.e.success)
+
+    def test_physically_released_cube_may_settle_before_jaw_fully_opens(self):
+        self.acquire_and_transfer()
+        f=frame((.34,-.04,.03));f.q[1,-1]=np.deg2rad(28)
+        f.environment[:]=[0,.4905,0,0,0,0]
+        self.hold(f);self.assertTrue(self.e.success)
+
+    def test_failed_grasp_and_transfer_do_not_gain_success(self):
+        f=frame((-.34,-.04,.08));f.environment[:]=0
+        self.hold(f);self.assertFalse(self.e.flags['lift'])
+        f.pads[0]=2;f.q[0,-1]=.38;self.hold(f)
+        f.pads[:]=0;f.cube[2]=.10;self.hold(f)
+        self.assertFalse(self.e.flags['handover']);self.assertFalse(self.e.success)
+
+    def test_sole_holder_slip_is_measured_without_expert_phase_labels(self):
+        f=frame((-.34,-.04,.073));f.environment[:]=0;f.pads[0]=2;f.q[0,-1]=.38
+        self.hold(f);f.cube[0]+=.006;self.e.update(f)
+        self.assertEqual(self.e.failure,'stable_grasp_slip')
+
+    def test_contact_limits_and_nonfinite_are_sticky_failures(self):
+        for fault in ('contact','effort','nan'):
+            self.setUp();f=frame()
+            if fault=='contact':f.contacts=(('left/gripper','table',.2),)
+            if fault=='effort':f.effort[1,2]=11
+            if fault=='nan':f.cube[0]=np.nan
+            self.e.update(f);self.assertIsNotNone(self.e.failure)
+            self.e.update(frame());self.assertIsNotNone(self.e.failure)
+
+    def test_invalid_reset_fails_prerequisite(self):
+        f=frame();f.environment[:]=0
+        with self.assertRaisesRegex(RuntimeError,'reset'):
+            self.e.reset(f,np.array([-.34,-.04]))
+
+    def test_timeout_and_reset_yaw_are_independent_of_controller(self):
+        self.e=TaskEvaluator(np.tile([-np.pi,np.pi],(6,1)),[],TaskSpec(timeout_s=.05))
+        self.e.reset(frame(),np.array([-.34,-.04]));self.hold(frame(),3)
+        self.assertEqual(self.e.failure,'timeout')
+        with self.assertRaisesRegex(RuntimeError,'reset'):
+            self.e.reset(frame(),np.array([-.34,-.04]),[0,0,0,1])
+
+
+class TrajectoryTests(unittest.TestCase):
+    def test_quintic_derivatives_and_speed_bound(self):
+        delta=np.array([.1,-1.5,.3]);duration=1.875*np.abs(delta).max()/.35
+        peaks=trajectory_limits(delta,duration)
+        u=np.linspace(0,1,10001)
+        velocity=(30*u*u-60*u**3+30*u**4)
+        acceleration=60*u-180*u*u+120*u**3
+        jerk=60-360*u+360*u*u
+        np.testing.assert_allclose(peaks['velocity_rad_s'],velocity.max()*np.abs(delta)/duration)
+        np.testing.assert_allclose(peaks['acceleration_rad_s2'],np.abs(acceleration).max()*np.abs(delta)/duration**2,rtol=1e-7)
+        np.testing.assert_allclose(peaks['jerk_rad_s3'],np.abs(jerk).max()*np.abs(delta)/duration**3)
+        self.assertLessEqual(peaks['velocity_rad_s'].max(),.35+1e-12)
+        self.assertEqual((quintic(0),quintic(1)),(0,1))
+
+    def test_state_writes_exist_only_in_common_reset(self):
+        root=Path(__file__).resolve().parents[1]/'scripts'
+        writes=[]
+        for name in ('benchmark_env.py','run_manipulation.py'):
+            tree=ast.parse((root/name).read_text())
+            for method in ast.walk(tree):
+                if isinstance(method,(ast.FunctionDef,ast.AsyncFunctionDef)):
+                    for call in ast.walk(method):
+                        if isinstance(call,ast.Call) and isinstance(call.func,ast.Attribute) and call.func.attr in ('write_root_state_to_sim','write_joint_state_to_sim'):
+                            writes.append((name,method.name));self.assertEqual(method.name,'reset')
+        self.assertTrue(writes)
+
+
+if __name__=='__main__':unittest.main()

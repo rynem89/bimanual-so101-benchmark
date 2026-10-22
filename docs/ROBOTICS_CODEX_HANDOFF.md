@@ -4,7 +4,9 @@ Updated 2026-10-22. Verify local files and current Git state before acting.
 **Latest maintained state:** branch `feat/fingertip-geometry-calibration`;
 geometry/TCP, approach, pickup, transport, handover and basket placement/retreat
 have passed measured simulator gates in **3/3 complete episodes**, including
-automatic reset. Final GUI regression is in progress. The dated execution
+automatic reset. The user subsequently visually confirmed the complete physical
+sequence (mission brief dated 2026-10-22). Benchmark hardening results below
+supersede earlier evaluation and timing claims. The dated execution
 updates below supersede the original snapshot's missing bounds/unverified TCP
 and early Git-state descriptions. Use README commands and current reports.
 
@@ -398,3 +400,284 @@ README now explains FK, five-DOF bounded TRF IK, coupled handover solving,
 collision sampling/LP, quintic trajectory formulas, force control, stage commands
 and cache behavior. Keep generated reports local/ignored; publish source/docs
 only to the authorized feature branch.
+
+## Learning notes / code map (current algorithms)
+
+### What the controller calculates
+
+This is a deterministic, measured state machine:
+`reset → approach → close → lift → transport → receive → release left → withdraw left → carry right → release in bin → retreat → evaluate`.
+Every motion is an actuator command. Object/robot state is written directly only
+at episode reset. Planning uses CPU NumPy/SciPy; Isaac Sim/PhysX executes the
+rigid-body dynamics and supplies measured joint states and contact forces.
+
+**Frames and forward kinematics.** Positions are metres, angles radians, and
+4×4 matrices map column vectors from a local frame into its parent/world frame.
+`SO101Model` reads joint axes, joint-frame transforms and limits from the actual
+USD. For each joint it calculates
+
+```text
+T_world_child(q) = T_world_parent · T_parent_joint0 · R_axis(q) · inverse(T_child_joint1)
+T_world_TCP(q)   = T_world_gripper(q) · T_gripper_TCP
+```
+
+The calibrated TCP offset is `(0.0141000004, 0, -0.09)` m in the gripper link.
+TCP X is the closing direction; -Z is the approach direction. Measured simulator
+link poses independently check the FK model at motion endpoints. These checks
+measure simulator consistency, not real-world calibration accuracy.
+
+**Inverse kinematics.** `SO101Model.ik` uses SciPy 1.15.3
+[`least_squares`](https://docs.scipy.org/doc/scipy-1.15.3/reference/generated/scipy.optimize.least_squares.html),
+with its Trust Region Reflective (`trf`) algorithm, joint bounds and numerical
+two-point derivatives. It minimizes `0.5 × ||r(q)||²` for the five arm joints;
+the sixth actuator opens/closes the gripper separately. The residual is:
+
+```text
+r_position = (p_TCP(q) - p_target) / 0.1 metres
+r_direction = -R_TCP(q)[:, 2] - desired_approach_unit_vector
+# Or, when a full orientation is requested:
+r_orientation = rotation_vector(inverse(R_target) · R_TCP(q))
+r = concatenate(r_position, r_direction or r_orientation)
+```
+
+Position plus approach direction imposes five independent constraints and leaves
+tool roll free. A complete orientation asks this five-joint arm to satisfy six
+pose constraints, so many requests are infeasible. Solver termination alone is
+insufficient: accepted solutions must achieve <1 mm position error and <1 degree
+orientation/direction error, inside all joint limits. Several deterministic
+starting guesses (random seed 101, plus the current/reference pose) reduce local
+solver failures; this is a bounded local search, not a proof of reachability.
+
+`handover_candidates` jointly solves the ten arm joints of both robots. It aligns
+the measured cube pose with the receiver on an orthogonal pair of cube faces,
+instead of independently prescribing two incompatible six-dimensional poses.
+The cube-to-TCP transform is measured after grasping; it is never assumed to be
+identity or used to create a physics attachment.
+
+**Path selection and collision checking.** The task planner chooses staged joint
+waypoints and checks every connecting segment. Close receiver approaches and
+donor withdrawals use 16 short Cartesian legs, solving IK along the tool axis.
+The donor first separates laterally, then retracts, turns away and returns HOME.
+This is a task-specific waypoint planner; it does not guarantee a solution in
+arbitrary clutter.
+
+Axis-aligned bounds cheaply reject separated mesh pairs. Remaining robot/bin
+pairs first try separating axes of the actual half-space-inflated hulls. A
+separating axis proves nonintersection; an inconclusive test retains the LP.
+Acute-corner inflation is computed by half-space intersection rather than an
+unsafe original-vertex radius approximation. Remaining pairs use convex envelopes: SciPy
+[`linprog(method='highs')`](https://docs.scipy.org/doc/scipy-1.15.3/reference/optimize.linprog-highs.html)
+tests whether their inflated half-space inequalities have a common point.
+Gripper/cube tests use authored triangles, separating-axis tests and containment
+checks because convexifying the whole gripper would fill its empty grasp region.
+The carried cube is transformed along the path and checked against obstacles.
+These geometric checks predict clearance; measured forces and slip remain
+independent execution gates.
+
+For joint-linear segments, the number of samples is
+`ceil(0.6 metres × sum(abs(q_end-q_start)) / (margin - 0.0001 metres)) + 1`, at least two.
+The 0.6 m downstream radius bounds nominal point movement to at most half the
+collision margin, minus a 0.1 mm cache-motion reserve, from the nearest sample. Typical margins are 1–3 mm depending
+on the check. This bound does not cover servo tracking error or differences
+between authored meshes and PhysX collision hulls; runtime checks cover those
+failure modes. Intended finger/cube contact and adjacent mechanical interfaces
+have explicit exceptions; donor contact is forbidden again after transfer.
+
+**Trajectory timing.** Once a joint segment is accepted, `move` / `move_right`
+apply the quintic interpolation below, with zero commanded velocity and
+acceleration at each endpoint:
+
+```text
+u = elapsed_time / T,  0 <= u <= 1
+s(u) = 10u^3 - 15u^4 + 6u^5
+q_desired(u) = q_start + s(u) · (q_end - q_start)
+T = max(1 second, 1.875 · max(abs(q_end-q_start)) / (0.35 radians/second))
+```
+
+`max(ds/du)=1.875`, which gives the duration formula and nominal joint command
+speed limit. Actual joint speeds are measured separately. The existing implicit
+PD actuators track these commands, with PhysX gravity-compensation torque added
+as feed-forward. Original gains, gravity, mass, friction and 10 rad/s / 10 N m
+actuator limits remain enabled. This is smooth interpolation with collision
+validation, not an optimized global time/jerk trajectory.
+
+**Grasp and objective evaluation.** The left hand closes until both pad forces
+exceed 3 N, then proves lift and hold. Loaded grip feedback keeps the smaller
+pad force near 3–4 N with bounded jaw-command changes. The receiver first reaches
+1 N bilateral preload while both compliant arms hold the cube, then increases
+preload as the donor releases. Right-only hold requires zero donor contact and
+three seconds of sustained receiver support. Slip >5 mm or rotation >10 degrees,
+forbidden contact >=0.05 N, or actuator limit violations stop the episode.
+Placement requires the entire cube inside the bin, both arms withdrawn, three
+seconds of floor support and low measured linear/angular speeds. Failed episodes
+attempt reset and retain the failure evidence; repeated full runs test reset
+from a cube already transferred or placed.
+
+An indeterminate HiGHS result is retried with dual simplex and presolve disabled.
+Only definite feasible/infeasible status is accepted; an unresolved retry still
+fails planning. This handles a numerical failure seen on a nearly tangent pair
+after reset without silently treating an unknown status as clear space.
+
+
+Exact peak nominal quintic derivatives are `1.875 |dq|/T`,
+`(10/sqrt(3)) |dq|/T²`, and `60 |dq|/T³`. Each segment is rest-to-rest, but
+jerk is discontinuous at joins and force feedback/phase target changes are not
+covered by those nominal formulas. The USD/LeIsaac actuators specify position,
+10 rad/s speed and 10 N m effort limits, **no acceleration or jerk limits**.
+The evaluator records finite-difference acceleration/jerk without inventing
+hardware limits. No real-robot dynamic certification is claimed.
+
+`BenchmarkEnv` owns all direct reset state writes, actuator submission, 60 Hz
+physics, pairwise force measurements and observations. `TaskEvaluator` consumes
+measured `Frame`s with no imports of the expert or planner and no phase/success
+inputs. Lift, right-only hold and released floor-supported placement each need
+three continuous seconds; failure is sticky until a verified reset. The expert
+retains early motion/contact guards, but cannot override this evaluator.
+Default policy observations contain both arms' joint positions/velocities and
+the preceding position action. `observe(privileged=True)` exposes simulator
+state to the expert/evaluator explicitly. Cameras and learning are absent.
+The policy adapter holds absolute `(2,6)` joint position targets (radians) for
+three physics ticks (20 Hz); the force-regulated expert currently updates at
+60 Hz. Future comparisons must declare this frequency/privilege advantage or
+run a matched-frequency expert; this is not yet a fair learning leaderboard.
+
+
+## Engineering audit — benchmark hardening (2026-10-22)
+
+Preserved known-good local baseline `9af7dc75007a3ed85295ff5a19e45bfe8986a107`
+on `feat/fingertip-geometry-calibration`, never modified main. The remote feature
+head observed during this mission was `4c6a9d3c6d5751f7978ae07a43adf5fe9b726fb4`,
+a different, older snapshot. New mission explicitly requires approval before
+push/merge/deletion. No further publication attempts or deletions. Earlier
+automatic approval review rejected publishing baseline source/environment
+details because its destination/export authorization was insufficiently
+specific; this was not bypassed. No dependencies/system settings changed.
+
+### Correctness findings and decisions
+
+| Subsystem | Finding / action | Remaining limit |
+| --- | --- | --- |
+| USD / FK | Actual composed collision triangles, authored joint frames; independent USD-rest and measured link checks retained | Authored envelopes differ from cooked PhysX hulls |
+| TCP / aperture | Triangle-derived TCP and full-footprint 42 mm clearance at 45°, user-confirmed finger surfaces | Simulator calibration, no real hardware contact calibration |
+| Five-DOF IK | Bounded deterministic multi-start TRF, achieved-pose checks; coupled 10-joint transfer solve | Local solver, full 6D requests often infeasible |
+| Collision scene | Task allowed contacts separated from expert labels; actual every-tick forces, payload and full paths checked | No certified tracking tube; runtime guard detects contact rather than proving avoidance under arbitrary disturbance |
+| Timing | Quintic analytic speed/acceleration/jerk peaks recorded; stricter sample spacing reserves cache tolerance | No authored acceleration/jerk limits; measured phase transients remain |
+| Actuation | Original implicit PD + PhysX robot gravity feed-forward retained | Compliant arms deflect during load transfer |
+| Grippers | Measured bilateral preload, bounded jaw feedback; staged receiver ramp measured | No tactile patch/pressure or real-motor model |
+| Handover | Cube/TCP/wrist/relative pose/joint/torque/forces logged every tick | PhysX reported velocity and pose finite differences disagree during sustained grasp; unresolved |
+| Placement | Entire cube, floor weight, low root speeds and both arms HOME for 3 s | Releases above basket rather than controlled floor-contact lowering |
+| Reset / evaluation | Common adapter plus independent observation-driven evaluator; reset verifies pose/orientation/velocity/weight | Single environment, not registered Gym/Isaac Lab RL task |
+
+Initial independent integration correctly rejected a release because it used a
+35° jaw-angle proxy for release. Measured pad force was already zero before
+that angle. Replaced the proxy with loss of **all** hand contact, without
+weakening containment, floor support or speed criteria; added regression.
+The older 4.1 mm TCP headline covered pickup only. New metrics cover both arms
+over the entire episode (baseline peaks 16.0 / 27.85 mm).
+
+A proposed nominal-target donor hold reduced dip but left 0.115 N donor force;
+rejected. Receiver staging alone passed: maintain 1–2 N preload until donor
+forces are <0.05 N for six ticks, then ramp the lower force bound to 3 N using
+a one-second quintic. Jaw rate, gains, friction, mass and effort caps unchanged.
+An attempted lift target based on post-contact cube seating (0.85 mm shifted)
+changed the coupled solution and caused receiver-path interference. It was
+rejected before receiver motion. Intended task lift target is now separate
+from measured collision/payload geometry. This demonstrates planner sensitivity,
+not a successful robustness trial.
+
+### Performance and collision validity
+
+`profile_before.json`: original LP approach, 3,794 samples, 32.5325 s profiled
+wall / 32.6561 s CPU; 1,958 LP calls consumed 22.6101 s. FK 0.246 s, IK 0.239 s.
+`profile_after.json`: same 3,794 samples, 17.8379 s profiled wall; convex queries
+2.6495 s, no LP fallback on this approach. Revalidation with preprocessed
+geometry 13.1102 s; **not** a persisted cache hit. Results are local timing
+samples, not universal hardware benchmarks. The subsequent cache correctness
+change increases sampling density to explicitly reserve 0.1 mm for <=1e-5
+state differences; final profile/tests below record the denser path separately.
+
+CPU tests compare every optimized approach query with the original definitive
+LP, plus rotated boxes, acute inflated corners, near-touching boundaries,
+ambiguous-LP retry, containment, FK/IK, cache invalidation, independent task
+failures, timeout/reset and exact trajectory derivative bounds. Testing an
+all-facet SAT prototype created unnecessarily large matrices; stopped its own
+diagnostic processes, replaced with a small deterministic sufficient-axis
+subset and preserved the LP fallback. No safety margin/resolution was reduced.
+
+### Planning alternatives / official references
+
+The current task-specific CPU planner remains the reference backend.
+[MoveIt planning-scene concepts](https://moveit.picknik.ai/main/doc/examples/planning_scene/planning_scene_tutorial.html)
+provide a useful model for robot/world state, padding and explicit allowed
+contacts; adopting ROS 2 is unnecessary for this fixed task.
+[MoveIt trajectory processing](https://moveit.picknik.ai/main/doc/concepts/trajectory_processing.html)
+separates geometric paths from time parameterization using joint limits; TOTG
+would need trustworthy acceleration limits and new swept-path validation.
+
+[Isaac Lab 2.3 SkillGen](https://isaac-sim.github.io/IsaacLab/v2.3.0/source/overview/imitation-learning/skillgen.html)
+pins cuRobo `ebb71702f3f70e767f40fd8e050674af0288abe8` with CUDA 12.8 source build.
+The [generic cuRobo installation page](https://curobo.org/get_started/1_install_instructions.html)
+still lists Python 3.8–3.10 and older Isaac Sim examples, so it does not establish
+compatibility with Python 3.11 / RTX 5090. No cuRobo install or measurement was
+performed. An approved experiment should use an isolated clone of the existing
+environment and that exact commit, verify Blackwell compiler/kernel support,
+build an SO-101 kinematic and collision-sphere model, then compare identical
+queries against independent mesh checks. Measure cold/warm latency, false-clear
+collisions, IK feasibility, trajectory derivatives, reproducibility and the
+same full-task evaluator. Reject a switch if correctness or reliability drops.
+This is a proposed experiment, not evidence that GPU planning will win.
+
+### Repository audit and proposed cleanup (approval required)
+
+All tracked files and the pre-existing untracked calibrator were inspected.
+Active implementation: model, planning, manipulation, shared task scene, finger
+audit, common environment/evaluator. Required tests: all three test modules.
+Configuration: .gitignore, .vscode/settings.json (existing Conda integration).
+Essential docs: README, this handoff, AGENTS operating contract. Historical
+diagnostics: scene inspection, FK inspection, motion/gripper/reset regression,
+two workspace probes. Generated outputs/logs/caches/datasets are ignored and
+not staged. No simulator assets or environments belong in Git.
+
+Proposed removals only: `scripts/probe_workspace.py` and
+`scripts/probe_coordinated_workspace.py` (unsafe exploratory grids, superseded by
+validated collision planning); `scripts/calibrate_so101_fingertips.py`
+(pre-existing untracked failed instance-proxy discovery, superseded by the
+maintained triangle audit). **No file removed.** Preserve motion/reset, FK and
+finger tests because they protect independent failure modes.
+
+### Hardened nominal baseline and CPU regression
+
+Commands in fresh activated shells, BLAS/OMP threads=1:
+
+```bash
+python -m unittest discover -s tests -v
+python scripts/run_manipulation.py --headless --stage full --handover-mode baseline --episodes 1
+```
+
+CPU run `review_cpu_final.log`: **23/23 passed**, 52.868 s, including
+2,175 optimized/reference LP comparisons across 4,215 approach samples (the
+0.1 mm sampling reserve adds checks to the earlier 3,794-sample corpus).
+Full run `review_final_baseline_restored.log`, report
+`full_20261022T113512685297Z.json`: **1/1 full pass**, independent evaluator all
+four flags true, zero collisions, correct reset. Sources were dirty relative
+to `9af7dc7`; report hashes identify the exact evaluated files.
+Cold start 5.3466 s (includes Kit launch, geometry 0.5354 s and calibration).
+Initial approach 13.8980 s; remaining cold planning 118.7613 s; episode wall
+191.0824 s including planning / 72.3211 s excluding it. Episode 209.1833
+simulated seconds includes reset; evaluator excludes reset (206.1833 s).
+Environment subtimes: actuation 3.6647, physics 50.6135, observations 9.2119,
+evaluation 2.0571, rendering 0 s. Reset 0.6150 s overlaps its physics/observation
+subtimes; do not sum it twice. Checkpoint serialization 3.6891 s per run.
+Measured per-episode timing deltas, not cumulative timings, are saved.
+
+Baseline transfer reproduces the earlier paired result exactly: cube/TCP dip
+17.3271/17.1831 mm, wrist 6.2327 mm, relative motion 1.0370 mm / 2.1416°, pose
+convergence 1.85 s. This supports compliant-arm deflection/tracking as the main
+dip component, with smaller contact settlement/slip. It is a measured
+attribution, not identification of all contact-model parameters. Cube COM
+local offset is exactly zero, so a COM-to-actor translation does not explain
+reported vz=+0.0380 m/s while final pose-derived vz=0. Velocity disagreement
+remains explicitly unresolved. Full-episode actual speed 2.15124 rad/s,
+effort 1.51440 N m, TCP tracking left/right 16.0237/27.8468 mm, sole-holder slip
+0.2101/1.2814 mm; acceleration 73.4027 rad/s² / jerk 7433.4863 rad/s³ are
+measurements, not passes against absent limits.

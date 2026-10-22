@@ -6,14 +6,14 @@ Convex envelopes are conservative rejection tests, not cooked PhysX geometry.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import json
 import os
 
 import numpy as np
 from scipy.optimize import least_squares, linprog
-from scipy.spatial import ConvexHull
+from scipy.spatial import ConvexHull, HalfspaceIntersection, QhullError
 from scipy.spatial.transform import Rotation
 
 JOINT_NAMES = ('shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper')
@@ -54,6 +54,7 @@ class Mesh:
     triangles: np.ndarray
     vertices: np.ndarray
     planes: np.ndarray
+    inflated_vertices: dict = field(default_factory=dict,repr=False)
 
 
 class SO101Model:
@@ -177,6 +178,39 @@ def intersect_hulls(a, ta, b, tb, margin=0.001):
     Inflates each hull by margin/2. Infeasibility proves separation of these
     envelopes; overlap only rejects a candidate, never proves real contact.
     """
+    # A separating face axis is a sufficient proof of nonintersection. Use the
+    # actual half-space-inflated vertices, not original vertices plus a radius:
+    # acute corners can expand by more than margin/2. Unresolved edge/edge cases
+    # still use the original LP, preserving its conservative contact semantics.
+    inflated=[]
+    for mesh in (a,b):
+        if margin not in mesh.inflated_vertices:
+            planes=mesh.planes.copy();planes[:,3]-=margin/2
+            try:
+                mesh.inflated_vertices[margin]=HalfspaceIntersection(planes,mesh.vertices.mean(0)).intersections
+            except QhullError:
+                mesh.inflated_vertices[margin]=None
+        inflated.append(mesh.inflated_vertices[margin])
+    if all(v is not None for v in inflated):
+        centre=ta[:3,3]-tb[:3,3]
+        if np.linalg.norm(centre)>1e-12:
+            axis=centre/np.linalg.norm(centre)
+            pa=inflated[0]@(ta[:3,:3].T@axis)+ta[:3,3]@axis
+            pb=inflated[1]@(tb[:3,:3].T@axis)+tb[:3,3]@axis
+            if pa.max()<pb.min()-1e-7 or pb.max()<pa.min()-1e-7:return False
+        # Curved CAD hulls have thousands of facets. Testing every face axis
+        # creates huge matrices; a small deterministic subset proves many
+        # separations cheaply. Missing an axis only falls back to the LP.
+        axes=np.vstack([a.planes[::max(1,len(a.planes)//12),:3]@ta[:3,:3].T,
+                        b.planes[::max(1,len(b.planes)//12),:3]@tb[:3,:3].T])
+        pa=inflated[0]@(ta[:3,:3].T@axes.T)+ta[:3,3]@axes.T
+        pb=inflated[1]@(tb[:3,:3].T@axes.T)+tb[:3,3]@axes.T
+        if np.any(pa.max(0)<pb.min(0)-1e-7) or np.any(pb.max(0)<pa.min(0)-1e-7):return False
+    return _lp_intersection(a,ta,b,tb,margin)
+
+
+def _lp_intersection(a,ta,b,tb,margin):
+    """Definitive fallback for pairs without a separating face-axis proof."""
     matrices = []
     offsets = []
     for mesh, t in ((a, ta), (b, tb)):
