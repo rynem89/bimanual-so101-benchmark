@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 PROCESS_STARTED=time.perf_counter()
 PROCESS_CPU_STARTED=time.process_time()
+MAIN_SOURCE_SHA256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 PLAN_TIMINGS=[]
 parser = argparse.ArgumentParser(description=__doc__,add_help=False)
 parser.add_argument('--stage', choices=('model','approach','pickup','transport','handover','full'), default='approach')
@@ -129,6 +130,8 @@ class Episode:
         self.writer=None
         self.held_action=None
         self.source_sha256={}
+        self.source_revision=None
+        self.source_dirty=False
         self.split='fixed_regression'
 
     def measured_q(self,side='left'):
@@ -259,7 +262,7 @@ class Episode:
                 raise RuntimeError(f'Transport grasp slip: {slip*1000:.2f}mm / {angle:.2f}deg')
         if check and not self.contact_allowed and self.baseline is not None and np.linalg.norm(cube-self.baseline)>.002:
             raise RuntimeError(f'Cube disturbed before intended contact: {(cube-self.baseline).tolist()}')
-        if self.phase in ('right_close','left_release','right_only_hold'):
+        if self.phase in ('right_close','left_release','right_only_hold') or self.phase.startswith('donor_normal_clearance_'):
             local=np.linalg.inv(frame.tcp[1])@frame.cube_pose()
             self.transfer_trace.append(dict(t_s=self.tick*self.dt,phase=self.phase,cube_m=frame.cube[:3].tolist(),
                 cube_quat_wxyz=frame.cube[3:7].tolist(),right_tcp_m=frame.tcp[1,:3,3].tolist(),
@@ -377,10 +380,10 @@ class Episode:
             root=options.record_dir/f'{self.case}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")}'
             self.writer=EpisodeWriter(root,dict(case=self.case,configuration=EVALUATION_CASES[self.case],
                 cameras=self.env.camera_metadata(),image_shape=[224,224,3],motion_mode=options.motion_mode,split=self.split,
-                source_revision=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+                source_revision=self.source_revision,tracked_source_dirty=self.source_dirty,
                 source_sha256=self.source_sha256,
                 physics_hz=60,expert_command_hz=20,controller='privileged geometric expert',
-                grip_feedback_from_lift=options.grip_feedback_from_lift))
+                grip_feedback_from_lift=options.grip_feedback_from_lift,joint_limits_rad=self.model.limits.tolist()))
             result['recording_dir']=str(root)
         if options.stage=='model':
             before=self.env.total_steps
@@ -697,7 +700,10 @@ def evaluate_policy(env,case):
     try:
         if options.policy_socket:
             connection=Client(str(options.policy_socket),family='AF_UNIX')
-            connection.send(dict(command='reset'));assert connection.recv()['ok']
+            connection.send(dict(command='reset',seed=seed));handshake=connection.recv()
+            if not handshake.get('ok') or handshake.get('protocol')!='so101-policy-1.0':
+                raise RuntimeError('Restart policy server with the matching versioned protocol')
+            result['policy_metadata']=handshake['policy_metadata'];result['policy_seed']=handshake['seed']
         else:
             from dataset_io import validate_episode
             validate_episode(options.replay)
@@ -783,7 +789,7 @@ def main():
             'cases_document':cases_document,'policy_socket':str(options.policy_socket) if options.policy_socket else None,
             'replay':str(options.replay) if options.replay else None,
             'tracked_source_dirty':bool(subprocess.run(['git','diff','--quiet'],check=False).returncode),
-            'source_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in sources},
+            'source_sha256':{name:MAIN_SOURCE_SHA256 if name==Path(__file__).name else hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in sources},
             'calibration':calibration,'geometry_loading_s':geometry_s,'calibration_s':calibration_s,
             'planning_timings':PLAN_TIMINGS,'episodes':[],'status':'in_progress'}
     path=options.output_dir/'simulation.json'
@@ -808,6 +814,7 @@ def main():
     sim.set_camera_view(eye=(.8,.9,.7),target=(0,-.12,.10))
     episode=Episode(sim,scene,model)
     episode.source_sha256=report['source_sha256']
+    episode.source_revision=report['source_revision'];episode.source_dirty=report['tracked_source_dirty']
     if cases_document:episode.split=cases_document.get('split',options.split)
     report['camera_calibration']=episode.env.camera_metadata()
     report['cold_start_wall_s']=time.perf_counter()-PROCESS_STARTED

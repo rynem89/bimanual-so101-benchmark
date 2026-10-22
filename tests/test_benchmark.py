@@ -101,6 +101,20 @@ class EvaluationTests(unittest.TestCase):
 
 
 class TrajectoryTests(unittest.TestCase):
+    def test_transfer_metrics_include_departure_and_expose_trace_gaps(self):
+        rows=[]
+        for i,height in enumerate((.18,.179,.172,.175,.175)):
+            rows.append(dict(t_s=i/60,phase='donor_normal_clearance_0' if i==2 else 'left_release',
+                cube_m=[0,0,height],right_tcp_m=[0,0,height],right_wrist_m=[0,0,height],
+                cube_in_right_tcp_m=[0,0,0],cube_in_right_tcp_rotation=np.eye(3).tolist(),
+                cube_vertical_velocity_m_s=0.,right_joint_tracking_deg=0.))
+        measured=transfer_metrics(rows)
+        self.assertAlmostEqual(measured['cube_drop_from_release_start_mm'],8)
+        self.assertEqual(measured['samples'],5);self.assertTrue(measured['trace_uniform_sampling'])
+        incomplete=transfer_metrics(rows[:2]+rows[3:])
+        self.assertFalse(incomplete['trace_uniform_sampling'])
+        self.assertAlmostEqual(incomplete['trace_max_gap_s'],2/60)
+
     def test_policy_clock_restarts_at_arbitrary_reset_tick(self):
         for origin in (180,181,182,9041):
             self.assertEqual([step for step in range(origin,origin+9) if policy_boundary(step,origin)],

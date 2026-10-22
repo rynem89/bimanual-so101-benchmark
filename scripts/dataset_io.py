@@ -13,7 +13,7 @@ import time
 import numpy as np
 from PIL import Image
 
-SCHEMA='so101-demonstration-1.0'
+SCHEMA='so101-demonstration-1.1'
 JOINT_ORDER=[f'{side}.{joint}' for side in ('left','right') for joint in
              ('shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll','gripper')]
 TASK='Left arm picks up the cube, transfers it to the right arm, which places it in the basket.'
@@ -22,7 +22,7 @@ TASK='Left arm picks up the cube, transfers it to the right arm, which places it
 def validate_episode(root):
     """Check chronology, exact held actions, dimensions and RGB on real files."""
     root=Path(root);meta=json.loads((root/'episode.json').read_text())
-    if meta['schema']!=SCHEMA or meta['joint_order']!=JOINT_ORDER or meta['fps']!=20:
+    if meta['schema'] not in (SCHEMA,'so101-demonstration-1.0') or meta['joint_order']!=JOINT_ORDER or meta['fps']!=20:
         raise ValueError('Dataset convention/version mismatch')
     if meta['success'] and not meta['evaluation'].get('success'):
         raise ValueError('Success lacks independent physical evidence')
@@ -36,6 +36,15 @@ def validate_episode(root):
             raise ValueError('Invalid episode state/action shapes')
         if not all(np.isfinite(data[k]).all() for k in ('state','action','time_s')):
             raise ValueError('Nonfinite trajectory')
+        bounded='joint_limits_rad' in meta
+        if meta['schema']==SCHEMA and not bounded:raise ValueError('Missing authored action bounds')
+        if bounded:
+            limits=np.asarray(meta['joint_limits_rad'])
+            if limits.shape!=(6,2) or not np.isfinite(limits).all() or np.any(limits[:,0]>=limits[:,1]):
+                raise ValueError('Invalid authored action bounds')
+            # Targets sent to PhysX are float32; allow only its rounding error.
+            if np.any(data['action']<np.tile(limits[:,0],2)-2e-7) or np.any(data['action']>np.tile(limits[:,1],2)+2e-7):
+                raise ValueError('Action outside authored radian bounds')
         if not np.all(np.diff(steps)==3) or not np.allclose(np.diff(data['time_s']),.05,atol=1e-6,rtol=0):
             raise ValueError('Episode is not synchronized at 20 Hz')
         if data['action_60hz'].shape!=(n,3,12) or not np.array_equal(data['action_60hz'],np.repeat(data['action'][:,None],3,axis=1)):
@@ -49,7 +58,7 @@ def validate_episode(root):
                 rgb=np.asarray(Image.open(root/camera/f'{index:06d}.png'))
                 if rgb.shape!=tuple(meta['image_shape']) or rgb.dtype!=np.uint8 or rgb.std()<2:
                     raise ValueError('Invalid or blank RGB observation')
-    return dict(frames=n,seconds=n/20,success=meta['success'],schema=meta['schema'])
+    return dict(frames=n,seconds=n/20,success=meta['success'],schema=meta['schema'],action_bounds_verified=bounded)
 
 
 class EpisodeWriter:

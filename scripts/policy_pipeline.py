@@ -57,6 +57,7 @@ def convert(args):
                 dataset.save_episode()
             provenance.append(dict(raw=str(root),case=meta['case'],configuration=meta['configuration'],
                 source_revision=meta['source_revision'],source_sha256=meta['source_sha256'],
+                raw_schema=meta['schema'],tracked_source_dirty=meta.get('tracked_source_dirty'),
                 raw_sha256=hashlib.sha256((root/'trajectory.npz').read_bytes()).hexdigest()))
     finally:dataset.finalize()
     manifest=dict(schema='so101-lerobot-conversion-1.0',lerobot='0.6.1',attempts=attempts,
@@ -162,6 +163,10 @@ def serve(args):
     policy=Policy.from_pretrained(args.checkpoint).to('cuda').eval()
     pre,post=make_pre_post_processors(policy.config,pretrained_path=args.checkpoint)
     torch.set_num_threads(4)
+    torch.backends.cudnn.deterministic=True;torch.backends.cudnn.benchmark=False
+    metadata=dict(checkpoint=str(args.checkpoint.resolve()),method=args.method,
+                  weights_sha256=hashlib.sha256((args.checkpoint/'model.safetensors').read_bytes()).hexdigest(),
+                  adapter_sha256=SCRIPT_SHA256,torch=torch.__version__,lerobot='0.6.1')
     os.umask(0o077)
     if args.socket.exists():raise FileExistsError('Refuse to overwrite an existing socket')
     try:
@@ -172,7 +177,9 @@ def serve(args):
                     while True:
                         try:request=connection.recv()
                         except EOFError:break
-                        if request['command']=='reset':policy.reset();connection.send({'ok':True});continue
+                        if request['command']=='reset':
+                            seed=int(request.get('seed',701));torch.manual_seed(seed);np.random.seed(seed%2**32);random.seed(seed)
+                            policy.reset();connection.send(dict(ok=True,protocol='so101-policy-1.0',seed=seed,policy_metadata=metadata));continue
                         if request['command']=='close':connection.send({'ok':True});return
                         if request['command']!='action':raise ValueError('Unknown inference command')
                         started=time.perf_counter()

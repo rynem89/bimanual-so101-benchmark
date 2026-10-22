@@ -275,11 +275,12 @@ class JointPath:
 def transfer_metrics(rows):
     if not rows:
         return {}
-    release = [r for r in rows if r['phase'] in ('left_release','right_only_hold')]
+    release = [r for r in rows if r['phase'] in ('left_release','right_only_hold') or r['phase'].startswith('donor_normal_clearance_')]
     if not release:
         return {}
     before = [r for r in rows if r['phase']=='right_close']
     if before:release=[before[-1],*release]
+    if len(release)<2:return dict(samples=len(release),valid=False,reason='insufficient_transfer_samples')
     t = np.array([r['t_s'] for r in release])
     cube = np.array([r['cube_m'] for r in release])
     tcp = np.array([r['right_tcp_m'] for r in release])
@@ -295,6 +296,8 @@ def transfer_metrics(rows):
     pose_suffix=np.logical_and.accumulate((stable_pose & (np.abs(pose_velocity)<.01))[::-1])[::-1]
     pose_indices=np.flatnonzero(pose_suffix)
     return dict(samples=len(release), dt_s=float(np.median(np.diff(t))),
+                trace_max_gap_s=float(np.diff(t).max()),
+                trace_uniform_sampling=bool(np.allclose(np.diff(t),np.median(np.diff(t)),atol=1e-7,rtol=0)),
                 cube_drop_from_release_start_mm=float((cube[0, 2]-cube[:, 2].min())*1000),
                 right_tcp_drop_from_release_start_mm=float((tcp[0, 2]-tcp[:, 2].min())*1000),
                 right_wrist_drop_mm=float((release[0]['right_wrist_m'][2]-min(r['right_wrist_m'][2] for r in release))*1000),

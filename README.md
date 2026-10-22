@@ -18,8 +18,8 @@ passed **3/4 perturbed poses** (4/5 including nominal); −1° yaw was rejected
 before receiver motion. Both deliberate grasp/transfer omissions were detected
 with zero task successes. Detailed measurements are
 recorded in the [engineering handoff](docs/ROBOTICS_CODEX_HANDOFF.md#engineering-audit--benchmark-hardening-2026-10-22).
-The user confirmed the complete physical sequence. The new continuous-motion
-replay is awaiting a separate visual check. Repeated identical starts establish
+The user confirmed the complete physical sequence and the continuous-motion
+replay. The newer RRT transit and measured donor-clearance move still need a visual check. Repeated identical starts establish
 repeatability, not general robustness or real-robot success.
 
 ## Run the simulator
@@ -266,6 +266,11 @@ their losses are not comparable success metrics. Larger-data results remain pend
 demonstrations also scored **0/1 nominal + 0/4 held-out for both methods**:
 ACT timed out, Diffusion violated actuator/contact limits. This is a small-data
 diagnostic, not a credible method ranking.
+The original Diffusion pilot did not seed denoising at episode reset. The current
+versioned inference protocol seeds Python, NumPy and Torch, records checkpoint
+and adapter hashes, and rejects an obsolete server. Repeated reset with seed
+813000 produced exactly equal actions; simulator evaluation must use this protocol
+before claiming a reproducible comparison.
 
 Two fixed 224×224 RGB cameras use Isaac Lab 2.3 `CameraCfg`: overhead eye
 `(0,-.12,.92)` m and front eye `(0,.72,.56)` m, with targets in
@@ -287,7 +292,11 @@ so interrupted generation is visible. Partial terminal transitions are excluded
 and explicitly counted; final physical
 state is retained separately. Failed attempts are kept and counted, but excluded
 from successful demonstration conversion. Validation rejects missing RGB,
-nonfinite/misaligned targets and invalid camera calibration. A local v3 dataset
+nonfinite/misaligned targets and invalid camera calibration. Raw schema 1.1 also
+stores authored radian joint limits and rejects out-of-range actions, with only
+float32 rounding tolerance. Process-start source hashes, revision and dirty status
+identify the generating controller. Legacy 1.0 files remain readable and explicitly
+report whether action bounds were verified. A local v3 dataset
 embeds images in parquet; no video codec or Hub upload is required.
 
 The original symmetric ±10 mm X / ±7 mm Y / ±6° candidate distribution produced

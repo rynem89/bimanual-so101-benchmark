@@ -1352,3 +1352,45 @@ Data expansion must use the corrected clock and improved expert AFTER source
 commit. Preserve failed initial batches and report their separate fractions.
 Human visual confirmation is needed for the new RRT/normal-departure behavior;
 original continuous GUI remains open until replaced with the verified revision.
+
+### Frozen provenance, bounded actions and seeded inference (2026-10-22)
+
+The user confirmed the continuous GUI motion was correct. This confirms the
+original continuous replay, not yet the newer RRT transit / donor normal move.
+The original visible process56345 was retained until this confirmation.
+
+Control commit `ba0bb04` preserves the exact seven source hashes of the three
+successful new-control regressions. An eight-worker matched-cache follow-up also
+passed2/2 (`full_clearance_audit/full_20261022T165449889359Z.json`); wall93.909/
+72.996s, physics59.623/50.411s versus one-worker warm64.309/64.541s and physics
+45.50/45.40s. First eight-worker episode overlapped CPU tests. No evidence that
+increasing workers improves this workload; retain process-local default1.
+
+Raw schema1.1 now embeds authored six-joint radian bounds, verified for both
+arms with only2e-7rad float32 rounding tolerance. A test corrupts both nominal
+and actual-held targets to90 and requires rejection. Legacy1.0 is readable but
+reports whether action bounds were independently verified. Recording metadata
+uses the process-start revision/dirty state and captured source hashes rather
+than consulting changing Git state at each reset. Transfer traces now include
+every donor normal-clearance tick, and expose nonuniform sampling / maximum gap;
+previous incomplete transient maxima remain explicitly uncertified.
+
+The versioned policy handshake `so101-policy-1.0` resets Python/NumPy/Torch RNGs
+using the case seed, resets policy queues, and reports checkpoint weight hash,
+adapter hash and software identity. The simulator refuses an obsolete server.
+Actual official Diffusion checkpoint reset813000 twice on real saved RGB/state
+produced EXACTLY equal12-target actions (`il_seeded_protocol.json`). This tests
+repeatability of the adapter, not manipulation success. Original unseeded pilot
+failure results remain historical and must not become a reproducible ranking.
+
+Final CPU regression:33/33 passed in37.919s, `il_schema_trace_final_tests.log`;
+command is the README CPU unittest command. `git diff --check` passed. Includes
+all2,177 LP-equivalence queries /4,215 checked approach samples. A prior32-test
+run passed37.878s and the added transfer-trace unit suite13/13 passed.190s.
+
+After the user reported Git authentication complete, an actual escalated
+`git fetch origin feat/fingertip-geometry-calibration` still failed128 with
+`fatal: could not read Username for 'https://github.com': No such device or address`.
+No credential helper or gh executable is configured in this terminal context.
+Asked for a successful `git ls-remote origin refs/heads/feat/fingertip-geometry-calibration`
+in the same workspace. No push is claimed and no remote ref changed.

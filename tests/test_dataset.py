@@ -13,7 +13,8 @@ from dataset_io import EpisodeWriter, validate_episode
 
 class DatasetTests(unittest.TestCase):
     def record(self,root,origin=180):
-        writer=EpisodeWriter(root,dict(cameras={'overview':{'quaternion_world_wxyz':[1,0,0,0]}},image_shape=[16,16,3]))
+        writer=EpisodeWriter(root,dict(cameras={'overview':{'quaternion_world_wxyz':[1,0,0,0]}},image_shape=[16,16,3],
+                                      joint_limits_rad=[[-2,3]]*6))
         self.assertEqual(json.loads((root/'attempt.json').read_text())['status'],'in_progress')
         rgb=np.arange(16*16*3,dtype=np.uint8).reshape(16,16,3)
         for i in range(3):
@@ -66,6 +67,14 @@ class DatasetTests(unittest.TestCase):
             for origin in (180,181,182):
                 root=Path(temp)/str(origin);self.record(root,origin)
                 self.assertEqual(validate_episode(root)['frames'],3)
+
+    def test_degrees_or_corrupt_targets_cannot_pass_as_radians(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'attempt';self.record(root)
+            with np.load(root/'trajectory.npz') as data:rows={key:data[key] for key in data.files}
+            rows['action'][1,4]=90;rows['action_60hz'][1,:,4]=90
+            np.savez_compressed(root/'trajectory.npz',**rows)
+            with self.assertRaisesRegex(ValueError,'radian bounds'):validate_episode(root)
 
 
 if __name__=='__main__':unittest.main()
