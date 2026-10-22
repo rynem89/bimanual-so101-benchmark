@@ -4,8 +4,8 @@ A simulation-first robotics benchmark: the left five-axis SO-101 picks up a
 40 mm cube, transfers it in mid-air to the right SO-101, and the right arm
 releases it into a basket. Both arms retreat, the cube settles on the basket
 floor, and the scene resets automatically. The reference policy uses geometry,
-IK and contact feedback. No learned policy, training or dataset generation is
-implemented.
+IK and contact feedback. The next active milestone is an isolated LeRobot
+imitation-learning pipeline; no learned manipulation success is claimed.
 
 The original complete sequence passed **3/3 repeated physics episodes** at
 `9af7dc7`; the user visually confirmed it in Isaac Sim. The benchmark-hardening
@@ -18,8 +18,8 @@ passed **3/4 perturbed poses** (4/5 including nominal); −1° yaw was rejected
 before receiver motion. Both deliberate grasp/transfer omissions were detected
 with zero task successes. Detailed measurements are
 recorded in the [engineering handoff](docs/ROBOTICS_CODEX_HANDOFF.md#engineering-audit--benchmark-hardening-2026-10-22).
-The new GUI replay passed numerical evaluation and remains open for inspection;
-human review of staged preload is pending. Repeated identical starts establish
+The user confirmed the complete physical sequence. The new continuous-motion
+replay is awaiting a separate visual check. Repeated identical starts establish
 repeatability, not general robustness or real-robot success.
 
 ## Run the simulator
@@ -35,7 +35,7 @@ export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 python --version  # Python 3.11.16
 
 # Full task with simulator window; final scene stays open for inspection.
-python scripts/run_manipulation.py --stage full --handover-mode staged
+python scripts/run_manipulation.py --stage full --motion-mode continuous
 
 # Automated complete episodes with the same physics/controller, no renderer.
 python scripts/run_manipulation.py --headless --stage full --handover-mode staged --episodes 3
@@ -157,6 +157,19 @@ configuration has 10 rad/s and 10 N m limits, **no acceleration/jerk limits**;
 those cannot be certified. Phase changes and contact feedback can create
 transients despite smooth nominal segments.
 
+`--motion-mode continuous` joins the receiver approach and donor withdrawal
+with clamped cubic joint splines, parameterized by the same quintic time law.
+Position, velocity and acceleration are continuous; contact boundaries retain
+90 settling ticks. The planner checks the actual spline, its exact polynomial
+extrema against joint limits, and intermediate configurations at a conservative
+motion-bound spacing. `--motion-mode legacy` preserves the successful stopped
+waypoint reference. Three continuous full-task runs passed independently:
+150.65 vs 209.17 simulated seconds (28% shorter), settling 24 vs 70.5 s,
+warm headless execution ~48 vs ~69 s. Peak speed/effort were 2.275 rad/s /
+1.427 N m, below the authored 10/10 limits; measured acceleration/jerk increased
+and have no authored limits. Handover dip was 10.30 vs 9.98 mm. GUI pacing now
+defaults to zero; `--viewer-delay 0.008` restores the old artificial pause.
+
 Measured bilateral forces regulate bounded jaw targets. Staged receiving
 preload delays the stronger squeeze until the donor unloads, then ramps it over
 one second. Original gains, masses, gravity, friction and actuator limits remain
@@ -176,7 +189,7 @@ python -m unittest discover -s tests -v
 python scripts/so101_planning.py --profile --output outputs/controller/profile_final.json
 ```
 
-Current CPU regression: **23 tests passed**, including independent evaluator
+Current CPU regression: **24 tests passed**, including independent evaluator
 false-positive/negative cases, timeout/reset, FK/IK, triangle containment,
 rotated/acute convex envelopes, ambiguous LP status, trajectory derivatives and
 cache invalidation. Complete approach tests compare every optimized hull query
@@ -244,4 +257,6 @@ Known limits: task-specific local planning, single simulated scene/hardware,
 compliant transfer, authored/cooked geometry differences, no certified tracking
 tube or continuous-contact guarantee between physics ticks, no real-robot trials. Future ACT, diffusion, RL and compact VLA comparisons
 must share the evaluator, declare observations/action rate, use held-out scene
-conditions and report uncertainty. Training remains outside this assignment.
+conditions and report uncertainty. The current mission authorizes isolated ACT/Diffusion training after physical
+recording and held-out coverage are validated. Until then these are incomplete
+milestones, not benchmark results.

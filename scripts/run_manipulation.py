@@ -27,6 +27,8 @@ parser.add_argument('--episodes',type=int,default=1)
 parser.add_argument('--output-dir',type=Path,default=Path('outputs/controller'))
 parser.add_argument('--exit-after',action='store_true',help='Close the GUI after evaluation instead of preserving the final view')
 parser.add_argument('--handover-mode',choices=('baseline','staged'),default='staged')
+parser.add_argument('--motion-mode',choices=('legacy','continuous'),default='legacy')
+parser.add_argument('--viewer-delay',type=float,default=0.,help='Optional wall seconds per physics tick, GUI only')
 parser.add_argument('--suite',choices=('nominal','perturb','negative'),default='nominal')
 parser.add_argument('--case',default='nominal',help='Fixed cube pose from benchmark_core.EVALUATION_CASES')
 if '--help' in sys.argv or '-h' in sys.argv:
@@ -40,7 +42,7 @@ import inspect_task_layout as layout
 import numpy as np
 from scipy.spatial.transform import Rotation
 from benchmark_env import BenchmarkEnv
-from benchmark_core import EVALUATION_CASES, quintic, trajectory_limits, transfer_metrics
+from benchmark_core import EVALUATION_CASES, JointPath, quintic, trajectory_limits, transfer_metrics
 from so101_model import SO101Model, calibrate, jsonable, transform, apply, box_mesh, LINK_NAMES
 from so101_planning import (plan_pickup, plan_lift, plan_transport, plan_receiver, plan_placement,
                            transport_fingerprint, CollisionWorld, fingerprint, valid_cache, CACHE_STATE_ATOL)
@@ -110,6 +112,7 @@ class Episode:
         self.case='nominal'
         self.fault=None
         self.plan_dir=options.output_dir
+        self.motion_timing=[]
 
     def measured_q(self,side='left'):
         arm=self.left if side=='left' else self.right
@@ -250,8 +253,8 @@ class Episode:
                                  'tcp_tracking_error_mm':tracking*1000})
         if self.checkpoint is not None and self.tick%120==0:
             self.checkpoint()
-        if not layout.args.headless:
-            time.sleep(.008)
+        if not layout.args.headless and options.viewer_delay>0:
+            time.sleep(options.viewer_delay)
         return cube,forces
 
     def move(self,start,end,phase,contact=False,jaw_target=None):
@@ -259,6 +262,7 @@ class Episode:
         print('[PHASE]',phase,flush=True)
         duration=max(1.,np.max(np.abs(end-start))*1.875/.35)
         self.nominal_trajectory_peaks.append(dict(phase=phase,duration_s=duration,**trajectory_limits(end-start,duration)))
+        self.motion_timing.append(dict(phase=phase,moving_s=(math.ceil(duration/self.dt)+1)*self.dt,settling_s=90*self.dt))
         for t in np.linspace(0,1,math.ceil(duration/self.dt)+1):
             blend=quintic(t)
             target=start+(end-start)*blend
@@ -277,6 +281,7 @@ class Episode:
         print('[PHASE]',phase,flush=True)
         duration=max(1.,np.max(np.abs(end-start))*1.875/.35)
         self.nominal_trajectory_peaks.append(dict(phase=phase,duration_s=duration,**trajectory_limits(end-start,duration)))
+        self.motion_timing.append(dict(phase=phase,moving_s=(math.ceil(duration/self.dt)+1)*self.dt,settling_s=90*self.dt))
         for t in np.linspace(0,1,math.ceil(duration/self.dt)+1):
             blend=quintic(t)
             self.right_target=start+(end-start)*blend
@@ -287,6 +292,24 @@ class Episode:
             raise RuntimeError('Right arm joint tracking error >3 degrees')
         return self.check_fk('right')
 
+    def follow(self,points,side,phase,speed):
+        """Execute the independently curve-checked Cartesian waypoint sequence.
+
+        Keep a single stabilization interval at the real contact/clearance
+        boundary. Grip feedback continues at every 60 Hz physics tick.
+        """
+        path=JointPath(points,speed);self.phase=phase
+        self.nominal_trajectory_peaks.append(dict(phase=phase,duration_s=path.duration,**path.limits()))
+        self.motion_timing.append(dict(phase=phase,moving_s=(math.ceil(path.duration/self.dt)+1)*self.dt,settling_s=90*self.dt))
+        print('[PHASE]',phase,flush=True)
+        for u in np.linspace(0,1,math.ceil(path.duration/self.dt)+1):
+            if side=='right':self.right_target=path.position(u);self.step(self.left_target)
+            else:self.step(path.position(u))
+        for _ in range(90):self.step(self.left_target)
+        if np.max(np.abs(self.measured_q(side)[:5]-points[-1][:5]))>np.deg2rad(3):
+            raise RuntimeError('Continuous endpoint joint tracking error >3 degrees')
+        return self.check_fk(side)
+
     def reset(self):
         self.phase='reset';self.contact_allowed=False;self.baseline=None
         self.transport_reference=None
@@ -296,6 +319,7 @@ class Episode:
         self.max_carried_environment_force_N=0.
         self.max_transport_slip_m=0.;self.max_transport_rotation_deg=0.
         self.transfer_trace=[];self.receiver_unloaded_ticks=0;self.nominal_trajectory_peaks=[]
+        self.motion_timing=[]
         xy,yaw,seed=EVALUATION_CASES[self.case]
         self.env.reset(xy,yaw,seed);self.tick+=180
         self.baseline=self.cube.data.root_pos_w[0].cpu().numpy().copy()
@@ -447,6 +471,7 @@ class Episode:
         result['independent_evaluation']=self.env.evaluator.report()
         result['transfer_metrics']=transfer_metrics(self.transfer_trace)
         result['nominal_trajectory_peaks']=self.nominal_trajectory_peaks
+        result['motion_timing']=self.motion_timing
         if options.stage=='full' and not self.env.evaluator.success:
             raise RuntimeError('Expert claimed completion without independent physical success')
         return result
@@ -464,15 +489,17 @@ class Episode:
         if valid:valid=np.allclose(receiver['cube_pose'],cube_pose,atol=CACHE_STATE_ATOL,rtol=0)
         if not valid:
             print('[PLAN] Validating receiver path around the measured held cube',flush=True)
-            receiver=compute_plan(plan_receiver,self.model,left_q,cube_pose,reference)
+            receiver=compute_plan(plan_receiver,self.model,left_q,cube_pose,reference,continuous=options.motion_mode=='continuous')
             receiver['fingerprint']=key
             path.write_text(json.dumps(jsonable(receiver),indent=2))
         result['receiver_plan']=receiver
         if receiver['selected'] is None:raise RuntimeError('Receiver path rejected; see receiver_plan.json')
         waypoints=[np.array(q) for q in receiver['selected']['waypoints']]
         phases=['right_open','right_pregrasp']+[f'right_approach_{i}' for i in range(len(waypoints)-3)]
-        for i,phase in enumerate(phases):
+        for i,phase in enumerate(phases[:2] if options.motion_mode=='continuous' else phases):
             result[phase+'_fk']=self.move_right(waypoints[i],waypoints[i+1],phase)
+        if options.motion_mode=='continuous':
+            result['right_approach_fk']=self.follow(waypoints[2:],'right','right_cartesian_approach',.12)
         self.contact_arms.add('Right_Robot')
         self.phase='right_close'
         stable=0
@@ -539,7 +566,7 @@ class Episode:
             if valid:valid=np.allclose(placement[name],value,atol=CACHE_STATE_ATOL,rtol=0)
         if not valid:
             print('[PLAN] Validating donor withdrawal and loaded bin travel',flush=True)
-            placement=compute_plan(plan_placement,self.model,left_q,right_q,local)
+            placement=compute_plan(plan_placement,self.model,left_q,right_q,local,continuous=options.motion_mode=='continuous')
             placement['fingerprint']=key
             path.write_text(json.dumps(jsonable(placement),indent=2))
         result['placement_plan']=placement
@@ -547,8 +574,14 @@ class Episode:
         if selected is None:raise RuntimeError('No validated withdrawal/bin path; see placement_plan.json')
         self.contact_arms.discard('Left_Robot')
         waypoints=[np.array(q) for q in selected['left_departure']['waypoints']]
-        for i in range(len(waypoints)-1):
-            self.move(waypoints[i],waypoints[i+1],f'left_retreat_{i}',contact=True)
+        if options.motion_mode=='continuous':
+            self.move(waypoints[0],waypoints[1],'left_separation',contact=True)
+            self.follow(waypoints[1:18],'left','left_cartesian_retreat',.2)
+            for i in range(17,len(waypoints)-1):
+                self.move(waypoints[i],waypoints[i+1],f'left_retreat_{i}',contact=True)
+        else:
+            for i in range(len(waypoints)-1):
+                self.move(waypoints[i],waypoints[i+1],f'left_retreat_{i}',contact=True)
         self.move_right(self.measured_q('right'),np.array(selected['right_goal']),'right_to_bin')
         right_model=copy.copy(self.model);right_model.base=self.model.base.copy();right_model.base[0,3]=.25
         cube_pose=right_model.tcp_pose(self.measured_q('right'))@self.cube_in_tcp('right')
@@ -616,6 +649,7 @@ def main():
     report={'stage':options.stage,'suite':options.suite,'requested_episodes_per_case':options.episodes,
             'requested_episodes':options.episodes*len(cases),'run_id':run_id,'headless':layout.args.headless,
             'handover_mode':options.handover_mode,'source_revision':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            'motion_mode':options.motion_mode,'viewer_delay_s':options.viewer_delay,
             'tracked_source_dirty':bool(subprocess.run(['git','diff','--quiet'],check=False).returncode),
             'source_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in sources},
             'calibration':calibration,'geometry_loading_s':geometry_s,'calibration_s':calibration_s,
@@ -659,7 +693,7 @@ def main():
     try:
         for case,fault in cases:
             episode.case=case;episode.fault=fault
-            episode.plan_dir=options.output_dir/'plans'/case/options.handover_mode
+            episode.plan_dir=options.output_dir/'plans'/case/options.handover_mode/options.motion_mode
             episode.plan_dir.mkdir(parents=True,exist_ok=True)
             xy,yaw,seed=EVALUATION_CASES[case]
             cube=np.array([*xy,.02]);rotation=Rotation.from_euler('z',yaw,degrees=True).as_matrix()

@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from benchmark_core import Frame,TaskEvaluator,TaskSpec,quintic,trajectory_limits,transfer_metrics
+from benchmark_core import Frame,TaskEvaluator,TaskSpec,JointPath,quintic,trajectory_limits,transfer_metrics
 
 
 def frame(position=(-.34,-.04,.02)):
@@ -101,6 +101,22 @@ class EvaluationTests(unittest.TestCase):
 
 
 class TrajectoryTests(unittest.TestCase):
+    def test_joint_spline_is_c2_and_its_analytic_bounds_cover_execution(self):
+        points=np.array([[0]*6,[.05,.1,0,0,0,0],[.12,.08,0,0,0,0],[.2,.14,0,0,0,0]])
+        path=JointPath(points,.12)
+        u=np.linspace(0,1,20001);s=quintic(u);t=path.duration
+        sd=(30*u*u-60*u**3+30*u**4)/t
+        sdd=(60*u-180*u*u+120*u**3)/t**2
+        velocity=path.spline(s,1)*sd[:,None]
+        acceleration=path.spline(s,2)*sd[:,None]**2+path.spline(s,1)*sdd[:,None]
+        self.assertLessEqual(np.abs(velocity).max(),.12+1e-10)
+        self.assertTrue(np.all(np.abs(acceleration).max(0)<=path.limits()['acceleration_rad_s2']+1e-10))
+        for knot in path.spline.x[1:-1]:
+            for derivative in (0,1,2):
+                np.testing.assert_allclose(path.spline(knot-1e-9,derivative),path.spline(knot+1e-9,derivative),atol=1e-6)
+        np.testing.assert_allclose(velocity[[0,-1]],0,atol=1e-12)
+        np.testing.assert_allclose(acceleration[[0,-1]],0,atol=1e-12)
+
     def test_quintic_derivatives_and_speed_bound(self):
         delta=np.array([.1,-1.5,.3]);duration=1.875*np.abs(delta).max()/.35
         peaks=trajectory_limits(delta,duration)

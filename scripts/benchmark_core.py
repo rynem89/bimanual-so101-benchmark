@@ -10,6 +10,7 @@ from itertools import product
 
 import numpy as np
 from scipy.spatial.transform import Rotation
+from scipy.interpolate import CubicSpline, PPoly
 
 CORNERS = np.array(list(product((-1., 1.), repeat=3))) * .02
 
@@ -223,6 +224,46 @@ def trajectory_limits(delta, duration):
     return dict(velocity_rad_s=1.875*delta/duration,
                 acceleration_rad_s2=(10/np.sqrt(3))*delta/duration**2,
                 jerk_rad_s3=60*delta/duration**3)
+
+
+class JointPath:
+    """C2 joint spline with rest-to-rest quintic time scaling, radians/seconds.
+
+    Unlike stitching minimum-duration moves, internal Cartesian waypoints have
+    continuous nonzero velocity. Geometry must be checked on this curve itself;
+    validation of the original polyline is insufficient.
+    """
+    def __init__(self, waypoints, speed=.12):
+        points=np.asarray(waypoints,dtype=float)
+        if points.ndim!=2 or points.shape[1]!=6 or len(points)<2 or not np.isfinite(points).all():
+            raise ValueError('Expected finite (N,6) joint waypoints')
+        distances=np.abs(np.diff(points,axis=0)).sum(axis=1)
+        points=points[np.r_[True,distances>1e-10]]
+        if len(points)<2:raise ValueError('Path must move')
+        knots=np.r_[0.,np.cumsum(np.abs(np.diff(points,axis=0)).sum(axis=1))]
+        knots/=knots[-1]
+        self.spline=CubicSpline(knots,points,bc_type='clamped')
+        self.peaks=[];bounds=[]
+        for order in range(4):
+            low=[];high=[]
+            for joint in range(6):
+                polynomial=PPoly(self.spline.c[:,:,joint],knots).derivative(order)
+                roots=polynomial.derivative().roots(extrapolate=False) if order<3 else []
+                values=polynomial(np.r_[knots,np.asarray(roots)[np.isfinite(roots)]])
+                low.append(values.min());high.append(values.max())
+            if order==0:bounds=np.array([low,high]).T
+            else:self.peaks.append(np.maximum(np.abs(low),np.abs(high)))
+        self.bounds=bounds
+        self.duration=max(1.,1.875*max(self.peaks[0])/speed)
+
+    def position(self,u):
+        return self.spline(quintic(u))
+
+    def limits(self):
+        d1,d2,d3=self.peaks;t=self.duration
+        v=1.875/t;a=10/np.sqrt(3)/t**2;j=60/t**3
+        return dict(velocity_rad_s=d1*v,acceleration_rad_s2=d2*v*v+d1*a,
+                    jerk_rad_s3=d3*v**3+3*d2*v*a+d1*j)
 
 
 def transfer_metrics(rows):

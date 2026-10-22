@@ -912,3 +912,64 @@ Remaining user checkpoint: visually review staged receiver loading (roughly
 and the open completed scene are preserved. After visual review and acceptance
 of the documented coverage limits, decide whether to publish this feature branch
 and approve the three proposed removals above. No merge into main is authorized.
+
+
+## Imitation-learning mission — motion milestone (2026-10-22)
+
+New mission explicitly authorizes normal non-force feature push, isolated
+Python 3.12 LeRobot training, and removal of the three named obsolete probes.
+Baseline `05a0c13` is preserved: all six source hashes matched the strict
+`full_20261022T121526133312Z.json` 3/3 report before edits. Branch remains
+`feat/fingertip-geometry-calibration`; main untouched.
+
+`git push --dry-run origin feat/fingertip-geometry-calibration` failed exit 128:
+`fatal: could not read Username for 'https://github.com': No such device or address`.
+No push succeeded; remote last independently observed at `4c6a9d3...`. The
+remote API snapshot may also require a history-preserving merge before a normal
+push. Do not force, rewrite, or substitute an API snapshot for the requested push.
+
+### Continuous paths: actual matched local physics
+
+Commands (activated original environment, OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1):
+
+```bash
+python scripts/run_manipulation.py --headless --stage full --motion-mode legacy
+python scripts/run_manipulation.py --headless --stage full --motion-mode continuous --episodes 3
+```
+
+Both exited 0. Reports `full_20261022T143607932087Z.json` (legacy 1/1) and
+`full_20261022T143935357354Z.json` (continuous 3/3), logs `il_legacy_baseline.log`
+and `il_continuous3.log`. All full-task and independent flags true; zero forbidden
+contacts. Same physics/materials/actuators/evaluation, run sequentially.
+Legacy simulated duration 209.1667 s; continuous 150.65 s including 3 s reset
+(28.0% reduction). Explicit waypoint settling 70.5 -> 24 s. Warm execution
+excluding CPU planning: legacy 68.987 s, continuous 47.907 / 47.927 / 48.131 s.
+Physics wall 50.513 -> 34.837–34.959 s; observation 9.174 -> 6.577–6.636 s.
+Cold episode planning legacy 118.721 s plus separately logged pickup; continuous
+169.777 s plus pickup, since the spline itself gets additional geometric checks.
+Warm second continuous episode rechecked final retreat in 9.049 s; third all
+plans reused. Faster execution does not mean faster cold planning.
+
+Continuous max joint tracking left/right 2.0572/2.7197 degrees; speed 2.27470
+rad/s, effort 1.42672 N m (limits 10/10). Stable slip .210/.7524 mm. Receiver
+dip 10.2952–10.2959 mm vs legacy 9.9835 mm; pose convergence 1.2167 vs 1.25 s.
+Measured acceleration/jerk 84.852 rad/s² / 9240.31 rad/s³ vs 73.726 / 7412.07.
+Those limits are absent in the asset; no acceleration/jerk certification.
+PhysX residual COM velocity remains; no velocity-settled claim.
+
+Implementation: `JointPath` uses clamped CubicSpline through cumulative joint
+arc-length knots, composed with quintic normalized time. It is C2 throughout
+and has zero velocity/acceleration at endpoints. Exact polynomial extrema
+provide joint bounds and conservative composed derivative peaks. Curve checks
+sample spline parameter with the same 0.6 m downstream-motion bound and
+0.1 mm cache reserve, rather than checking only waypoint chords. The initial
+donor pan separation, contact stabilization, release/closure and final large
+segments retain their prior pauses. Core math is now in cache fingerprints.
+
+GUI command `python scripts/run_manipulation.py --stage full --motion-mode continuous`
+launched for one user visual checkpoint, log `il_continuous_gui.log`; no artificial
+8 ms/tick pacing unless `--viewer-delay 0.008` is selected. Human reply pending.
+
+CPU regression on these motion sources: `python -m unittest discover -s tests -v`,
+24/24 passed in 37.647 s (`il_motion_tests.log`), exit 0. Includes independent
+evaluator, geometry/LP equivalence and analytic C2/velocity/acceleration checks.

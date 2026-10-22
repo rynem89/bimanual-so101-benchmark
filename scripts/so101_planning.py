@@ -12,6 +12,7 @@ import hashlib
 import inspect
 from pathlib import Path
 from so101_model import apply, box_mesh, intersect_hulls, mesh_box_overlap
+from benchmark_core import JointPath
 
 CACHE_STATE_ATOL=1e-5
 CACHE_MOTION_RESERVE_M=.0001
@@ -35,7 +36,7 @@ def valid_cache(saved, key, **state):
 def fingerprint(model):
     """Invalidate generated plans after any asset/model/planner change."""
     h=hashlib.sha256()
-    for path in (Path(model.asset),Path(__file__).with_name('so101_model.py'),Path(__file__)):
+    for path in (Path(model.asset),Path(__file__).with_name('so101_model.py'),Path(__file__),Path(__file__).with_name('benchmark_core.py')):
         h.update(path.read_bytes())
     h.update(Path(__file__).with_name('inspect_task_layout.py').read_bytes())
     h.update(model.tcp.tobytes());h.update(model.base.tobytes());h.update(model.limits.tobytes())
@@ -117,6 +118,18 @@ class CollisionWorld:
             if faults:
                 return {'safe':False,'samples':count,'failed_sample':i,'q':q,'faults':faults}
         return {'safe':True,'samples':count,'cache_motion_reserve_m':CACHE_MOTION_RESERVE_M}
+
+    def curve(self,points,speed=.12,margin=.001):
+        path=JointPath(points,speed)
+        if np.any(path.bounds[:,0]<self.model.limits[:,0]) or np.any(path.bounds[:,1]>self.model.limits[:,1]):
+            return dict(safe=False,faults=['spline_joint_limit'])
+        # Per-joint exact spline derivative extrema bound every point's travel
+        # between nearest samples, including spline bulges away from the chords.
+        count=max(2,int(np.ceil(.6*sum(path.peaks[0])/(margin-CACHE_MOTION_RESERVE_M)))+1)
+        for i,s in enumerate(np.linspace(0,1,count)):
+            faults=self.check(path.spline(s),margin)
+            if faults:return dict(safe=False,samples=count,failed_sample=i,faults=faults)
+        return dict(safe=True,samples=count,duration_s=path.duration,**path.limits())
 
 
 def plan_pickup(model, cube=(-.34,-.04,.02), rotation=None):
@@ -300,7 +313,7 @@ def plan_transport(model, start_q, cube_in_tcp):
     return report
 
 
-def plan_receiver(model, left_q, cube_pose, reference_q):
+def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False):
     """Plan the open right hand around the actual held cube and stationary left."""
     import copy
     right=copy.copy(model);right.base=model.base.copy();right.base[0,3]=.25
@@ -337,17 +350,20 @@ def plan_receiver(model, left_q, cube_pose, reference_q):
                     checks.append(check)
                     if not check['safe']:break
                 if len(checks)==len(pairs) and all(c['safe'] for c in checks):
+                    curve_check=world.curve(approach) if continuous else None
+                    if continuous and not curve_check['safe']:
+                        result['rejections'].append({'curve':curve_check});continue
                     check=world.segment(goal['q'],closure,margin=.001,cube_contact=True)
                     checks.append(check)
                     if check['safe']:
                         result['selected']={'waypoints':waypoints,
-                                            'checks':checks,'grasp_ik':goal,'pre_ik':pre}
+                                            'checks':checks,'grasp_ik':goal,'pre_ik':pre,'curve_check':curve_check}
                         return result
                 result['rejections'].append(checks)
     return result
 
 
-def plan_placement(model, left_q, right_q, cube_in_right_tcp):
+def plan_placement(model, left_q, right_q, cube_in_right_tcp, continuous=False):
     """Withdraw the donor, then carry the physical payload over the bin.
 
     Initial donor separation starts at a former contact surface. Only that
@@ -384,6 +400,9 @@ def plan_placement(model, left_q, right_q, cube_in_right_tcp):
             retreat.append(clear)
         if len(retreat)!=18 or world.check(retreat[-1],margin=.001):
             result['rejections'].append({'departure':checks});continue
+        curve_check=world.curve(retreat[1:],speed=.2) if continuous else None
+        if continuous and not curve_check['safe']:
+            result['rejections'].append({'departure_curve':curve_check});continue
         # Turning away first avoids the jaw sweeping back through the held
         # cube when elbow and shoulder are straightened simultaneously.
         turned=retreat[-1].copy();turned[0]=0.
@@ -391,7 +410,7 @@ def plan_placement(model, left_q, right_q, cube_in_right_tcp):
         if not second['safe']:result['rejections'].append(second);continue
         third=world.segment(turned,home,margin=.001)
         if third['safe']:
-            departure={'waypoints':[*retreat,turned,home],'checks':[*checks,second,third]};break
+            departure={'waypoints':[*retreat,turned,home],'checks':[*checks,second,third],'curve_check':curve_check};break
         result['rejections'].append(third)
     if departure is None:return result
     for height in (.11,.105,.10):
