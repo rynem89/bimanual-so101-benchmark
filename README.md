@@ -10,7 +10,8 @@ implemented.
 The original complete sequence passed **3/3 repeated physics episodes** at
 `9af7dc7`; the user visually confirmed it in Isaac Sim. The benchmark-hardening
 revision adds an independent evaluator, transfer instrumentation, faster
-collision rejection and fixed regression cases. Its final measurements are
+collision rejection and fixed regression cases. **Staged receiver preload passed 3/3 complete independently evaluated episodes**
+with automatic reset and zero collision violations. Detailed measurements are
 recorded in the [engineering handoff](docs/ROBOTICS_CODEX_HANDOFF.md#engineering-audit--benchmark-hardening-2026-10-22).
 Repeated identical starts establish repeatability, not general robustness or
 real-robot success.
@@ -55,14 +56,16 @@ runs. The first complete run must validate many paths and is slower.
 | `handover` | Three seconds of right-only support after donor release |
 | `full` | Released cube settled in basket, both arms withdrawn |
 
-Use `--handover-mode baseline` for the original receiving-force schedule.
+`staged` is now the default after the 3/3 regression. Use
+`--handover-mode baseline` for the original receiving-force schedule.
 `--case nominal/x_plus_1mm/x_minus_1mm/yaw_plus_1deg/yaw_minus_1deg` selects one
 fixed case; `--suite perturb` runs all five. Seeds 101–105 and exact initial
 poses are in `benchmark_core.EVALUATION_CASES`. `--episodes` repeats each case.
 These are small diagnostic perturbations, not a sampled task distribution.
 
 Each run writes `outputs/controller/simulation.json` checkpoints and a unique
-`full_<UTC timestamp>.json` (or the requested stage name). Reports contain source
+`full_<UTC timestamp>.json` (or the requested stage name). Full timestamped history persists at episode boundaries; the two-second
+checkpoint retains the active phase and 12 recent samples. Reports contain source
 revision **and file hashes**, dirty status, configuration/seeds, stage outcomes,
 independent metrics, timing, failure observations and physics-step transfer
 traces. Outputs are ignored by Git. Exit 0 means the requested stage passed;
@@ -170,7 +173,8 @@ with the original LP; all intermediate poses remain validated.
 | Profiled cold approach, same 3,794 samples | 32.53 s | 17.84 s |
 | Convex-query inclusive time | 22.76 s | 2.65 s |
 | LP calls on that approach | 1,958 | 0 (all separations proved) |
-| Geometry-warm approach revalidation, no plan cache | — | 13.11 s |
+| Final cold approach, **4,215 samples** with cache reserve | — | 13.03 s |
+| Final geometry-warm revalidation, no plan cache | — | 11.55 s |
 | Release cube / right-TCP dip, initial paired trial | 17.33 / 17.18 mm | 9.98 / 10.07 mm |
 | Pose convergence after release, initial paired trial | 1.85 s | 1.25 s |
 

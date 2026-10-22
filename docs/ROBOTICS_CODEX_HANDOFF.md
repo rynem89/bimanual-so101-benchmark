@@ -655,7 +655,7 @@ python scripts/run_manipulation.py --headless --stage full --handover-mode basel
 ```
 
 CPU run `review_cpu_final.log`: **23/23 passed**, 52.868 s, including
-2,175 optimized/reference LP comparisons across 4,215 approach samples (the
+2,177 optimized/reference LP comparisons across 4,215 approach samples (the
 0.1 mm sampling reserve adds checks to the earlier 3,794-sample corpus).
 Full run `review_final_baseline_restored.log`, report
 `full_20261022T113512685297Z.json`: **1/1 full pass**, independent evaluator all
@@ -681,3 +681,71 @@ remains explicitly unresolved. Full-episode actual speed 2.15124 rad/s,
 effort 1.51440 N m, TCP tracking left/right 16.0237/27.8468 mm, sole-holder slip
 0.2101/1.2814 mm; acceleration 73.4027 rad/s² / jerk 7433.4863 rad/s³ are
 measurements, not passes against absent limits.
+
+### Staged preload repeated regression / policy adapter
+
+`python scripts/run_manipulation.py --headless --stage full --handover-mode staged --episodes 3`
+completed with exit 0, report `full_20261022T114046453102Z.json`, log
+`review_final_staged3.log`. All seven expert stage counts **3/3**, all four
+independent flags true in every episode, zero collision violations. Sources
+match the control implementation committed in `7148636` (run began before the
+commit; hashes rather than its dirty HEAD label identify it). Seed 101 each
+reset. Three episodes each lasted 209.1667 simulated seconds including reset.
+Cube dip 9.98315–9.98352 mm, TCP dip 10.06565–10.06608 mm, relative translation
+<0.920 mm / rotation <1.984°, pose convergence 1.25 s. Compared with the exact
+baseline: **42.4% less cube dip**, lower receiver tracking error (3.582° →
+2.621°), transfer peak right effort 1.5144 → 1.2322 N m, peak receiving forces
+5.956/5.293 → 3.771/3.357 N. Gravity compensation ~0.451 N m is unchanged in
+scale. No stronger squeeze or altered gains/materials were used.
+
+Minimum final bin floor support across three episodes 0.4904992 N, maximum
+linear speed 0.00076356 m/s, angular speed 0.0129624 rad/s. Full-episode effort
+<=1.35272 N m, speed <=2.15130 rad/s. Left/right full-episode TCP tracking
+16.024 / 20.710 mm; sole-holder slip <0.211 / 0.790 mm. Full trajectory derivative
+metrics remain in the report. Nominal peak commanded speed is 0.35 rad/s.
+These are repeatability measurements at one condition; no IID success-rate
+confidence interval is justified from identical deterministic repeats.
+
+Cold run start 5.321 s, approach 14.250 s, remaining planning
+120.046 s. Episode wall/planning seconds: 192.445/120.046,
+92.167/9.041 (post-drop retreat revalidation), 94.172/0 (all plans reused).
+Physics was ~50.7 s each; observation ~9.3 s, evaluation ~2.1 s. Whole-run
+checkpoint serialization grew to **43.512 s**, so a subsequent code change
+retains only the active phase and 12 recent samples in the two-second checkpoint.
+Complete history/traces persist in timestamped reports at every episode
+boundary and on handled failures. Later runs measure this improvement; the
+above timings intentionally describe the original logging overhead.
+
+`--stage model` now exercises the common policy interface in real physics:
+three ticks per action (20 Hz), three `(2,6)` proprioceptive arrays with no
+oracle fields, and rejection of wrong-shape/NaN/out-of-limit actions before
+stepping. `review_policy_adapter.log` exited 0. Extended pure evaluator tests
+passed 10/10, including nonfinite target/contact forces and invalid quaternion.
+Raw contact matrices are checked for finite values before threshold filtering.
+No change to valid finite-state physical control results from these guards.
+
+The adapter follows [Isaac Lab 2.3 action/physics decimation](https://isaac-sim.github.io/IsaacLab/v2.3.0/source/tutorials/03_envs/create_direct_rl_env.html)
+concepts while remaining a small application adapter rather than a registered
+RL task. [Isaac Lab 2.3 reproducibility guidance](https://isaac-sim.github.io/IsaacLab/v2.3.0/source/features/reproducibility.html)
+limits cross-hardware determinism claims. Here seeds initialize NumPy and
+PyTorch; exact source hashes, fixed task poses and the pinned rigid-body/GPU
+stack define the evaluated conditions. No runtime material randomization.
+
+Final isolated CPU profile (`review_profile_final.log`, `profile_final.json`):
+geometry 0.4842 s, calibration 0.9338 s; **13.0298 s wall / 13.0311 s CPU** cold
+approach, **4,215 samples**, 2,177 convex queries in 2.1573 s, zero LP fallbacks.
+FK 0.2392 s, IK 0.2406 s; geometry-warm revalidation 11.5534 s, no persisted
+plan cache. This denser final profile is separate from the same-3,794-sample
+32.53 → 17.84 s comparison above; host load and profiler overhead affect timing.
+The single model USD composes from one 23,241,268-byte used layer, already
+included in the asset fingerprint; resolved triangles/limits/TCP/scene source
+are hashed as well. GPU utilization read during earlier CPU planning was 1%
+(on the RTX 5090); this is not a measured GPU-planner comparison.
+
+A final review found a potential stale-evaluator report when offline approach
+planning rejected before reset. Removed that shortcut: every attempted episode
+now resets and establishes fresh evaluator state before reporting a rejected
+plan. Reset also clears evaluator state at entry, including prerequisite
+failures. Failed cases retain a category, measured observation and plan-evidence
+path. This prevents a preceding successful episode from contaminating later
+failure evidence.

@@ -80,6 +80,8 @@ class BenchmarkEnv:
             desired.append(self.model.tcp_pose(self.targets[i],base))
             wrist.append(arm.data.body_pos_w[0,self.body_ids[i]['wrist']].cpu().numpy().copy())
         self.matrices=[v.get_contact_force_matrix(self.dt).cpu().numpy() for v in self.contacts]
+        if not all(np.isfinite(matrix).all() for matrix in self.matrices):
+            raise RuntimeError('Nonfinite robot contact sensor matrix')
         pads=[];contacts=[]
         for view,matrix in zip(self.contacts,self.matrices):
             names={str(p).rsplit('/',1)[-1]:i for i,p in enumerate(view.sensor_paths)}
@@ -144,6 +146,7 @@ class BenchmarkEnv:
     def reset(self, cube_xy=(-.34,-.04), cube_yaw_deg=0., seed=101):
         """The sole direct physical state-write entry point; verify after settling."""
         started=time.perf_counter()
+        self.evaluator.reset_state()
         torch.manual_seed(seed);np.random.seed(seed)
         for arm in self.arms:
             arm.write_joint_state_to_sim(arm.data.default_joint_pos,torch.zeros_like(arm.data.default_joint_pos))

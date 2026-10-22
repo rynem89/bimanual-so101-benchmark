@@ -116,10 +116,13 @@ class TaskEvaluator:
             return
         dt = self.spec.physics_dt
         self.elapsed_s += dt
-        arrays = (frame.cube, frame.q, frame.qd, frame.effort, frame.gravity,
-                  frame.tcp, frame.pads, frame.environment)
-        if not all(np.isfinite(a).all() for a in arrays):
+        arrays = (frame.cube, frame.q, frame.qd, frame.target, frame.effort, frame.gravity,
+                  frame.tcp, frame.desired_tcp, frame.wrist, frame.pads, frame.environment)
+        if (not all(np.isfinite(a).all() for a in arrays)
+                or not all(np.isfinite(force) for _,_,force in frame.contacts)):
             self._fail('nonfinite_physics_observation'); return
+        if abs(np.linalg.norm(frame.cube[3:7])-1)>1e-3:
+            self._fail('invalid_cube_quaternion');return
         self.max_speed = max(self.max_speed, float(np.abs(frame.qd).max()))
         self.max_effort = max(self.max_effort, float(np.abs(frame.effort).max()))
         if self.max_speed > self.spec.speed_limit_rad_s+.05 or self.max_effort > self.spec.effort_limit_Nm+.05:

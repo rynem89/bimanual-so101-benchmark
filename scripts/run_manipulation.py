@@ -26,7 +26,7 @@ parser.add_argument('--stage', choices=('model','approach','pickup','transport',
 parser.add_argument('--episodes',type=int,default=1)
 parser.add_argument('--output-dir',type=Path,default=Path('outputs/controller'))
 parser.add_argument('--exit-after',action='store_true',help='Close the GUI after evaluation instead of preserving the final view')
-parser.add_argument('--handover-mode',choices=('baseline','staged'),default='baseline')
+parser.add_argument('--handover-mode',choices=('baseline','staged'),default='staged')
 parser.add_argument('--suite',choices=('nominal','perturb','negative'),default='nominal')
 parser.add_argument('--case',default='nominal',help='Fixed cube pose from benchmark_core.EVALUATION_CASES')
 options, rest = parser.parse_known_args()
@@ -77,10 +77,6 @@ class Episode:
         self.env=BenchmarkEnv(sim,scene,model,layout)
         self.ids=self.env.ids
         self.dt=sim.get_physics_dt()
-        self.root='/World/envs/env_0/'
-        self.filters=[self.root+n for n in ('Cube','Table','BinFloor','BinLeftWall','BinRightWall','BinFrontWall','BinBackWall')]
-        self.filters += [self.root+arm+'/'+body for arm in ('Left_Robot','Right_Robot') for body in LINK_NAMES]
-        self.contacts=self.env.contacts
         self.cube_contact=self.env.cube_contact
         self.samples=[]
         self.tick=0
@@ -314,9 +310,25 @@ class Episode:
                 'reset_fk':self.reset(),'pickup_success':False,'lift_success':False,'handover_success':False,
                 'placement_success':False,'full_task_success':False}
         self.result=result
-        if options.stage=='model':return result
+        if options.stage=='model':
+            before=self.env.total_steps
+            observation,terminal,metrics=self.env.step(np.zeros((2,6)))
+            if terminal or self.env.total_steps-before!=3:raise RuntimeError('Policy decimation/termination regression')
+            expected={'joint_position_rad','joint_velocity_rad_s','previous_position_action_rad'}
+            if set(observation)!=expected or any(value.shape!=(2,6) for value in observation.values()):
+                raise RuntimeError('Policy observation schema regression')
+            for invalid in (np.zeros(12),np.full((2,6),np.nan),np.full((2,6),99.)):
+                before=self.env.total_steps
+                try:self.env.step(invalid)
+                except ValueError:pass
+                else:raise RuntimeError('Invalid policy action accepted')
+                if self.env.total_steps!=before:raise RuntimeError('Invalid action stepped physics')
+            result['policy_adapter_check']=dict(physics_hz=60,policy_hz=20,observation_keys=sorted(expected),invalid_actions_rejected=3)
+            return result
         waypoints=[np.array(q) for q in plan['waypoints']]
-        if not waypoints:raise RuntimeError('No validated approach path')
+        if not waypoints:
+            result['approach_plan_evidence_path']=str(self.plan_dir/'plan.json')
+            raise RuntimeError('No validated approach path: '+plan.get('failure','IK/collision feasibility rejected'))
         for i,phase in enumerate(('open','pregrasp','grasp')):
             result[phase+'_fk']=self.move(waypoints[i],waypoints[i+1],phase)
         result['grasp_tcp_error_mm']=float(np.linalg.norm(self.tcp()-np.array(plan['targets'][1]))*1000)
@@ -603,9 +615,11 @@ def main():
             'planning_timings':PLAN_TIMINGS,'episodes':[],'status':'in_progress'}
     path=options.output_dir/'simulation.json'
     logging_s=0.
+    history_path=options.output_dir/f'{options.stage}_{run_id}.json'
     def save():
         nonlocal logging_s
         started=time.perf_counter();path.write_text(json.dumps(jsonable(report),indent=2))
+        history_path.write_text(json.dumps(jsonable(report),indent=2))
         logging_s+=time.perf_counter()-started
     save()
     sim=layout.SimulationContext(layout.sim_utils.SimulationCfg(device=layout.args.device))
@@ -622,10 +636,18 @@ def main():
     report['cold_start_wall_s']=time.perf_counter()-PROCESS_STARTED
     report['cube_com_offset_body_m']=episode.cube.data.body_com_pos_b.cpu().numpy()
     def checkpoint():
-        report['active_phase']=episode.phase
-        report['active_episode']=getattr(episode,'result',{})
-        report['last_episode_samples']=episode.samples
-        save()
+        nonlocal logging_s
+        # Do not serialize all completed traces/plans every two simulated
+        # seconds. Full history is persisted at episode boundaries; retain a
+        # small interruption checkpoint with an explicit link to that history.
+        started=time.perf_counter()
+        active={k:v for k,v in getattr(episode,'result',{}).items()
+                if not k.endswith(('_plan','_metrics','_trace','_peaks'))}
+        state=dict(status='in_progress',run_id=run_id,history_file=str(history_path),
+                   active_phase=episode.phase,active_case=episode.case,active_episode=active,
+                   completed_episodes=len(report['episodes']),last_episode_samples=episode.samples[-12:])
+        path.write_text(json.dumps(jsonable(state),indent=2))
+        logging_s+=time.perf_counter()-started
     unexpected_failures=[]
     try:
         for case,fault in cases:
@@ -640,7 +662,8 @@ def main():
             plan=json.loads(plan_path.read_text()) if plan_path.exists() else {}
             cache_hit=plan.get('fingerprint')==key
             if options.stage!='model' and not cache_hit:
-                plan=compute_plan(plan_pickup,model,cube,rotation)
+                try:plan=compute_plan(plan_pickup,model,cube,rotation)
+                except Exception as exc:plan={'waypoints':[],'failure':str(exc)}
                 plan['fingerprint']=key;plan_path.write_text(json.dumps(jsonable(plan),indent=2))
             report.setdefault('approach_plan_timings',[]).append(dict(case=case,cache_hit=cache_hit,wall_s=time.perf_counter()-plan_started))
             for repetition in range(options.episodes):
@@ -649,8 +672,6 @@ def main():
                 plan_index=len(PLAN_TIMINGS)
                 error=None
                 try:
-                    if options.stage!='model' and not plan.get('waypoints'):
-                        raise RuntimeError('Offline planning rejected all approach trajectories')
                     result=episode.run(plan)
                     result['status']='passed'
                 except Exception as exc:
@@ -660,6 +681,9 @@ def main():
                     if frame is not None:
                         result['failure_observation']=dict(cube=frame.cube,pads_N=frame.pads,environment_N=frame.environment,q_rad=frame.q)
                     result['independent_evaluation']=episode.env.evaluator.report()
+                    result['failure_category']=(episode.env.evaluator.failure or
+                        {'reset':'reset_prerequisite','close':'failed_grasp','right_close':'failed_transfer'}.get(episode.phase)
+                        or ('planning_rejection' if any(word in error.lower() for word in ('path','planning','collision','unsafe')) else 'controller_guard'))
                     result['transfer_trace']=list(episode.transfer_trace)
                     result['transfer_metrics']=transfer_metrics(episode.transfer_trace)
                     # Expected negatives must fail at the actual omitted grasp,
@@ -696,10 +720,11 @@ def main():
         report['attempted_episodes']=len(report['episodes'])
         report['completed_episodes']=sum(e['status']=='passed' for e in report['episodes'])
         report['unexpected_failures']=unexpected_failures
+        report['case_counts']={case:dict(attempted=sum(e['case']==case for e in report['episodes']),
+            full_task_success=sum(e['case']==case and bool(e.get('full_task_success')) for e in report['episodes'])) for case,_ in cases}
         report['logging_wall_s']=logging_s
         report['total_wall_s']=time.perf_counter()-PROCESS_STARTED
         save()
-        (options.output_dir/f'{options.stage}_{run_id}.json').write_text(json.dumps(jsonable(report),indent=2))
     print('[RESULT]',report['status'],flush=True)
     if unexpected_failures:raise RuntimeError(f'{len(unexpected_failures)} unexpected failure(s); see {path}')
     if not layout.args.headless and not options.exit_after:

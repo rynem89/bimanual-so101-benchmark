@@ -69,11 +69,14 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(self.e.failure,'stable_grasp_slip')
 
     def test_contact_limits_and_nonfinite_are_sticky_failures(self):
-        for fault in ('contact','effort','nan'):
+        for fault in ('contact','effort','nan','target','contact_nan','quaternion'):
             self.setUp();f=frame()
             if fault=='contact':f.contacts=(('left/gripper','table',.2),)
             if fault=='effort':f.effort[1,2]=11
             if fault=='nan':f.cube[0]=np.nan
+            if fault=='target':f.target[0,0]=np.nan
+            if fault=='contact_nan':f.contacts=(('left/gripper','table',np.nan),)
+            if fault=='quaternion':f.cube[3:7]=0
             self.e.update(f);self.assertIsNotNone(self.e.failure)
             self.e.update(frame());self.assertIsNotNone(self.e.failure)
 
