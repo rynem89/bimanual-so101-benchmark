@@ -261,3 +261,16 @@ Final link/syntax pass: **140 local links/anchors**, including
 temporary redirects, **24 Bash blocks** and **27 CLI examples** passed.
 All 41 final files are named in the code map. The existing focused CLI result
 was reused after prose-only corrections; it was not rerun.
+
+## Approved retirement: actual final-tree checks — 2026-10-23
+
+The owner approved all eight exact file removals, fast-forward/push of main and
+retirement of the four incorporated feature branches. All eight files were then
+removed on the existing consolidation branch. The actual 41-file working tree
+passed **10 CLI/authorization tests in 0.225 s**, **136 local links/anchors**,
+**24 Bash syntax blocks** and **27 parsed CLI examples**. All remaining source/test
+and active configuration bytes, archived metadata, original QA/report/ledger and
+reference benchmark match the pre-cleanup record. The pilot's file/size/mtime
+inventory also matches. No broad CPU or physical regression was repeated, and no
+new physical success, collection or training is claimed. Exact removals, final
+counts and approved Git integration are recorded in the maintained code map.

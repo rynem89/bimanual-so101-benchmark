@@ -183,8 +183,8 @@ not override it.
 
 The provisional design proposes 100 train /20 validation attempts and 100
 held-out evaluation cases. **Collection, augmentation and all policy training
-remain unauthorized.** The current assignment is consolidation only. Main
-integration and the exact file/branch deletions require one final approval.
+remain unauthorized.** Repository consolidation and the exact eight-file/four-branch
+cleanup received separate owner approval; it does not authorize learning work.
 Approved camera/protocol JSON bytes, controller, evaluator and action semantics
 remain fixed. [Measured pilot details](docs/DATASET.md#measured-pilot-results).
 
@@ -197,7 +197,7 @@ After the six README steps, open only the guide needed for your question:
 | [Simulation and expert](docs/SIMULATION.md) | Environment locks, USD assets, camera transforms, FK/IK, collision checks, trajectories and physical evaluation |
 | [Demonstrations](docs/DATASET.md) | Dataset design, exact record fields, acceptance, conversion and measured pilot results |
 | [Policies and evaluation](docs/POLICIES.md) | Official ACT/Diffusion recipe, training/resume, inference and comparison limits |
-| [Code map](docs/ARCHITECTURE.md) | Every maintained file/API, output retention and exact integration/removal scope |
+| [Code map](docs/ARCHITECTURE.md) | Every maintained file/API, output retention and completed consolidation |
 
 Core flow: `so101.py` → `run_manipulation.py` → shared `benchmark_env.py` and
 `benchmark_core.py`. Model/planner compute expert motion; dataset and policy
@@ -217,9 +217,9 @@ reference benchmark and camera-approval evidence. Disposable caches removed in
 the previous cleanup are **not counted again**; this pass found no identical
 stationary PNG previews to delete. [What remains and why](docs/ARCHITECTURE.md#local-outputs).
 
-Continue on `feat/repository-consolidation`; no new branch is needed. The
-[exact integration/removal package](docs/ARCHITECTURE.md#integration-approval)
-is ready for one owner decision. It proposes fast-forwarding `main`, publishing
-it, then deleting the four incorporated feature branches. Git history and existing
-recovery tags remain. Until approval, the eight listed removal candidates remain
-on disk and `main` is unchanged.
+The approved consolidation is complete: **41 tracked files, four active detailed
+guides, 13 Python scripts, four configurations and seven tests**. The sole branch
+is `main`; the four incorporated feature branches have been retired locally and
+on GitHub. The [consolidation record](docs/ARCHITECTURE.md#consolidation-record)
+lists the eight exact file removals and before/after counts. Git history and all
+existing recovery tags are preserved. No new branch or tag was created.

@@ -12,13 +12,12 @@ replays, reference benchmark and approved cameras. Human acceptance of all pilot
 data is still pending. No accepted training corpus or trained policy exists in
 the reset pipeline. Do not restart completed geometry/control/pilot milestones.
 
-The current assignment is final consolidation on `feat/repository-consolidation`.
-Do not create another branch, framework, wrapper, documentation file or research
-feature. Prepare the exact removal/integration package in
-`docs/ARCHITECTURE.md#integration-approval`; obtain one consolidated owner approval
-before executing those tracked removals, main integration and branch deletions.
-An approval applies only to its exact scope. No reset, clean, force-push, broad
-filesystem deletion or overwrite of uncommitted work.
+Repository consolidation is complete. `main` is the sole remaining local/remote
+branch and is protected from unrequested changes. The approved eight-file and
+four-feature-branch cleanup is recorded in `docs/ARCHITECTURE.md#consolidation-record`;
+that authorization does not cover future removals or unrelated work. No new branch,
+framework, wrapper, documentation file or research feature is requested. Never
+reset, clean, force-push, delete other files/refs or overwrite uncommitted work.
 
 ## Preserve semantics and environment
 

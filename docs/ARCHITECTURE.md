@@ -143,8 +143,8 @@ The previous cleanup already removed 73 disposable cache/preview files totaling
 or recount that deletion. No byte-identical stationary PNG preview groups were
 found. No additional generated evidence is selected for removal. Ordinary Python
 bytecode and reader caches may regenerate; their presence does not add maintained
-source files. No datasets, checkpoints or evidence folders are in the deletion
-package below.
+source files. No datasets, checkpoints or evidence folders were included in the approved
+cleanup below.
 
 ## Focused checks
 
@@ -168,12 +168,12 @@ cleanup changes neither. The previous expert/replay regressions and owner-approv
 viewer/HTML workflow remain the physical/usability evidence, preserved in the
 [verification record](archive/VERIFICATION.md).
 
-## Integration approval
+## Consolidation record
 
-The final content is prepared on `feat/repository-consolidation`; no new branch.
-The eight files below stay on disk until the owner's single approval. Their useful
-documentation is already consolidated; the unused code/configs are not maintained
-interfaces. Git commit `bbb15f5` preserves the complete pre-cleanup tree.
+The owner approved the exact final cleanup after reviewing `1ac8c88`. Work stayed
+on `feat/repository-consolidation` until integration; no new branch was created.
+The eight files below were removed. Useful documentation was merged into the
+existing four guides, and retired experiments/configs remain in Git history.
 
 | Exact tracked removal | Dependency check / where its useful content went |
 | --- | --- |
@@ -187,10 +187,10 @@ interfaces. Git commit `bbb15f5` preserves the complete pre-cleanup tree.
 | `configs/task_distribution.json` | Unused old 32/8/30 experiment; historical review retains the original identifiers/hash; no active reader |
 
 The retired files remain accessible through [the pre-cleanup Git tree](https://github.com/rynem89/bimanual-so101-benchmark/tree/bbb15f533c186537f81846ac3dc75c6a0a14484e).
-The six archive relocations above preserve the existing files rather than adding
-new documentation. After the approved eight removals:
+Six existing historical records were relocated to `docs/archive/`, including the
+byte-identical review metadata JSON. No additional documentation file was created.
 
-| Count (tracked working tree) | Before (`bbb15f5`) | Final prepared tree |
+| Count | Before (`bbb15f5`) | After consolidation |
 | --- | ---: | ---: |
 | All tracked files | 49 | 41 |
 | Active guides under `docs/` | 11 | 4 |
@@ -200,27 +200,21 @@ new documentation. After the approved eight removals:
 | Historical Markdown records | 2 beside active guides | 5 separated under `docs/archive/` |
 | Local /remote branches | 5 /5 | 1 /1 (`main`) |
 
-README, AGENTS and the asset license/README are counted in total files but not in
-the four active detailed guides. The archival metadata JSON is a record, not an
-active config. Current on-disk total stays 49 until the eight removals are approved.
+README, AGENTS and the asset license/README are counted in total files but not
+in the four active detailed guides. Archival metadata is a record, not a config.
 
-### Exact final Git operations requiring approval
+`main` was fast-forwarded from `c01651938f6220a23cb19ce3734670376e3eead5`
+to the checked cleanup history, without squash, rewrite or force-push. After
+verification that GitHub main contained the final cleanup commit, the following
+incorporated branches were deleted **locally and remotely**:
 
-1. Recheck remote tips and require `main` still at
-   `c01651938f6220a23cb19ce3734670376e3eead5`. Stop for changed/divergent tips.
-2. Delete only the eight listed files, run focused final-tree checks and commit
-   the removals on the existing consolidation branch. Publish that review branch.
-3. Fast-forward local `main` to the checked consolidation tip (`git merge --ff-only`),
-   then push `main`. No squash, history rewrite or force-push.
-4. Only after GitHub `main` is verified at that tip, delete these four branches
-   **locally and remotely**: `feat/gripper-characterization`,
-   `feat/fingertip-geometry-calibration`, `feat/il-camera-dataset-v2`,
-   `feat/repository-consolidation`. All five current tips were verified ancestors
-   of the consolidation branch; their commits remain in main's history.
-5. Keep all existing recovery tags, pilot data, weights and benchmark evidence.
-   The final remaining branch is `main`; no new branch or tag is created.
+- `feat/gripper-characterization`
+- `feat/fingertip-geometry-calibration`
+- `feat/il-camera-dataset-v2`
+- `feat/repository-consolidation`
 
-Approval covers this exact package, not collection, augmentation, training,
-new features, dependency changes or any other deletion. If GitHub main protection
-blocks the push, stop and report that restriction; do not delete remote feature
-branches before integration is verified.
+Their commits remain ancestors of main. All existing recovery tags, the 12 pilot
+recordings, QA, original benchmark, camera evidence and cached weights remain.
+This approval covered consolidation only; collection, augmentation, training,
+dependency changes and unrelated deletions remain unauthorized. The exact focused
+checks and preservation limits are in the [verification record](archive/VERIFICATION.md).

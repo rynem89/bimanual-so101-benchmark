@@ -82,10 +82,20 @@ renders with task physics frozen.
 ## Cameras and coordinate frames
 
 [policy_cameras.json](../configs/policy_cameras.json) is the sole calibration
-configuration. Approval: user visual review, 2026-10-23. Its exact hash is in
+configuration. Approval: user visual review, 2026-10-23. Current gates are in
 [README](../README.md#project-status). The original overview variants remain historical diagnostics;
 they are not the policy configuration. `configure_cameras` dynamically adds camera
 prims to the scene; it does not change robot mass/collision or the upstream USD.
+
+Preserved configuration SHA-256 values (the demonstration protocol remains
+provisional for final collection):
+
+```text
+policy_cameras.json:
+f8f7e56842602fbe040fea43b1cf1a51f75f56b3ad28357aae04f717c8e9fcbc
+demonstration_protocol.json:
+9ec7c3539c287e11bdc988eb52597a16001404d81ef43f8aad64fd0c6a4a3b3a
+```
 
 | Sensor | Parent | Position and aim, metres in that parent frame |
 | --- | --- | --- |

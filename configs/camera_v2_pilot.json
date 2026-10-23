@@ -1,9 +1,0 @@
-{
-  "schema": "so101-cases-1.0",
-  "split": "train",
-  "approval_status": "pending camera and pilot approval; do not collect yet",
-  "purpose": "One known nominal pose for a user-controlled first pilot; not a robustness distribution",
-  "cases": [
-    {"name": "camera_v2_nominal_pilot", "cube_xy_m": [-0.34, -0.04], "yaw_deg": 0.0, "seed": 101}
-  ]
-}
