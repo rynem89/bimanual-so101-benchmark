@@ -118,7 +118,7 @@ internal extraction should have its own physical regression and approval scope.
 | [docs/VERIFICATION.md](VERIFICATION.md) — measured results | Consolidation regression commands/results and pending human checkpoint |
 | [docs/REPOSITORY_AUDIT.md](REPOSITORY_AUDIT.md) — audit | Branch/file classifications and proposed removals, no deletion authorization |
 | [docs/ROBOTICS_CODEX_HANDOFF.md](ROBOTICS_CODEX_HANDOFF.md) — historical archive | Original engineering commands/results and dated failures; no current operating authority |
-| [docs/POLICY_REVIEW.md](POLICY_REVIEW.md), [metadata](POLICY_REVIEW_METADATA.json) — historical evidence | Earlier failed learning choices/configuration/provenance; `current_models` means current at that historical audit, not existing models now |
+| [docs/POLICY_REVIEW.md](POLICY_REVIEW.md), [docs/POLICY_REVIEW_METADATA.json](POLICY_REVIEW_METADATA.json) — historical evidence | Earlier failed learning choices/configuration/provenance; `current_models` means current at that historical audit, not existing models now |
 | [.gitignore](../.gitignore) — repository configuration | Excludes outputs, data, weights, caches, environments and secrets |
 | [.vscode/settings.json](../.vscode/settings.json) — editor configuration | Existing Conda environment/package manager selection |
 

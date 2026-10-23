@@ -22,7 +22,7 @@ updated from actual commands; pending items are not completion claims.
 | Documentation/examples | 139 internal links resolve; 42 example commands parse; all 49 maintained files inventoried |
 | Raw pilot preservation | All 12 full raw byte digests, episode inventory and original QA/report hashes unchanged |
 | Actual gate rejection checks | Unauthorized collection, unaccepted pilot conversion, missing train data and missing checkpoint all rejected; no data/model/socket created |
-| Human visual checkpoint | Pending, consolidated scene/feed and raw-review usability inspection |
+| Human visual checkpoint | Owner accepted camera viewer and raw-review HTML; reported guide-tree instability. Targeted fix passed automated checks; guide expansion/selection recheck pending |
 
 ## Reproduce the cheap checks
 
@@ -176,3 +176,45 @@ the three images with their joint/action table. No browser surface is enabled fo
 automated interaction here; do not mark layout/playback accepted until the owner
 reviews it. Close Isaac and report any problem. This does not grant pilot-data
 acceptance, further collection, training, deletion, merge or push permission.
+
+## Owner feedback, InspectionGuides fix and output cleanup
+
+The owner confirmed that the new stationary viewer and `nominal_review.html`
+are good, and reported that `InspectionGuides` flickers/cannot stay expanded in
+the Stage inspector. This is UI acceptance of the image/review workflow, not
+acceptance of the 12 pilot demonstrations.
+
+The original stationary loop called `MakeInvisible` and `MakeVisible` on the
+guide USD prim every refresh, causing repeated authored stage changes. The fix
+captures real RGB at the already frozen state **before** creating guides, updates
+the image providers once, and subsequently only renders the viewport. It does not
+modify camera calibration, task physics or the expert/recording capture path.
+A USD `ObjectsChanged` observer independently counts changes under the guide root;
+deliberate user guide edits remain allowed.
+
+Actual bounded Isaac check: `scene --headless --duration 3 --frames` with fresh
+snapshot directory `outputs/repository_consolidation/guides_fix_check` produced
+**53 viewport renders, one frozen-state three-camera capture and zero authored
+guide-change notices**. Physical clock, joint position and cube pose changes
+were all zero. Five camera tests passed in 0.010 s and ten CLI/gate tests in
+0.224 s; existing sensor functions remain AST-identical to the preserved baseline.
+The Stage expansion/selection fix awaits a focused owner visual recheck.
+
+Cleanup removed 73 verified stale cache/preview files /776,310,957 bytes;
+[the exact scope and retained outputs](REPOSITORY_AUDIT.md#generated-output-cleanup-and-retention)
+are documented. The per-file hashes/reasons are local in
+`outputs/repository_consolidation/cleanup_manifest.json`. All final verification,
+benchmark results, approved-camera evidence, source/configs, the ResNet backbone
+cache and raw pilot data are retained. No dataset collection, optimizer update,
+tracked deletion, branch deletion, merge or push was performed.
+
+After cleanup, all 12 complete raw-episode digests were recomputed and matched
+the original QA record. The original QA/report bytes and both frozen config
+hashes also remain unchanged; the local summary is
+`outputs/repository_consolidation/post_cleanup_preservation.json`.
+
+The final audit of the 12 current guides passed: 132 local links/anchors resolve,
+29 Bash blocks pass syntax checks, all 42 CLI examples parse without execution,
+and all 49 tracked files are named in the architecture inventory. Runtime/config
+preservation and the absence of all 73 removed files were rechecked in
+`outputs/repository_consolidation/guides_cleanup_audit.json`.

@@ -325,11 +325,13 @@ def inspect_scene(layout, args):
 
     Reset performs the established three-second settling hold. Thereafter only
     rendering advances: no expert, action sequence, recording or task execution.
-    Optical guides are display-only and hidden while the actual RGB is captured.
+    RGB is captured before creating display-only guides. Keeping those images
+    at the frozen physics state avoids per-render USD visibility edits, which
+    otherwise continually refresh the Stage tree while a user inspects it.
     """
     import gc
     import time
-    from pxr import Gf, UsdGeom
+    from pxr import Gf, Sdf, Tf, Usd, UsdGeom
     import omni.usd
     from benchmark_env import BenchmarkEnv
     from so101_model import SO101Model, calibrate
@@ -354,6 +356,7 @@ def inspect_scene(layout, args):
     sim.set_camera_view(eye=(.8, .9, .7), target=(0., -.12, .10))
     env = BenchmarkEnv(sim, scene, model, layout)
     window = None
+    guide_observer = None
     try:
         env.reset()
         images = env.capture_images()
@@ -399,6 +402,23 @@ def inspect_scene(layout, args):
                 for axis, colour in enumerate(((1., 0., 0.), (0., 1., 0.), (0., .4, 1.))):
                     line(name + str(axis), [pose[:3, 3], pose[:3, 3] + .06 * pose[:3, axis]], colour)
 
+        # Observe authored guide changes independently of the render loop.
+        # Selecting/expanding a prim should not author USD. A user may still
+        # deliberately edit display guides; that is reported, not forbidden.
+        guide_change_count = 0
+        guide_changed_paths = set()
+        guide_path = Sdf.Path('/World/InspectionGuides')
+
+        def observe_guide_changes(notice, sender):
+            nonlocal guide_change_count
+            paths = [path for path in (*notice.GetResyncedPaths(), *notice.GetChangedInfoOnlyPaths())
+                     if path.HasPrefix(guide_path)]
+            if paths:
+                guide_change_count += 1
+                guide_changed_paths.update(map(str, paths))
+
+        guide_observer = Tf.Notice.Register(Usd.Notice.ObjectsChanged, observe_guide_changes, stage)
+
         providers = {}
         if not layout.args.headless:
             import omni.ui as ui
@@ -406,7 +426,7 @@ def inspect_scene(layout, args):
             groups = {}
             with window.frame:
                 with ui.VStack(spacing=6):
-                    ui.Label('Stationary inspection: no expert or recording. Optical guides are excluded from RGB.')
+                    ui.Label('Actual RGB at the settled, frozen state. Guides are excluded; no expert or recording.')
                     selector = ui.ComboBox(0, 'All cameras', *NAMES, height=25)
                     with ui.HStack(spacing=8):
                         for name in NAMES:
@@ -427,6 +447,10 @@ def inspect_scene(layout, args):
                     raise RuntimeError('Camera selector did not update the feed panels')
             selector.model.get_item_value_model().set_value(0)
 
+        for name, provider in providers.items():
+            rgba = np.dstack((images[name], np.full((HEIGHT, WIDTH, 1), 255, dtype=np.uint8)))
+            provider.set_bytes_data(rgba.flatten().data, [WIDTH, HEIGHT])
+
         if args.snapshot_dir:
             args.snapshot_dir.mkdir(parents=True)
             for name, pixels in images.items():
@@ -434,36 +458,31 @@ def inspect_scene(layout, args):
         print('[SCENE] Settled and frozen. Three actual RGB feeds enabled; no expert or recording.', flush=True)
         print('[SCENE] Robot: existing LeIsaac USD. Cameras: gripper children. Mount STL is not physical geometry.', flush=True)
         print('[SCENE] Yellow guides: optical +Z; optional axes: X red / Y green / Z blue. Close Isaac to exit.', flush=True)
+        print('[SCENE] RGB remains at the frozen state; InspectionGuides is not rewritten during rendering.', flush=True)
         started = time.monotonic()
-        captures = 0
+        viewport_renders = 0
         while layout.app.is_running() and (not args.duration or time.monotonic() - started < args.duration):
-            guides.MakeInvisible()
-            images = env.capture_images()
-            current_metadata = env.camera_metadata()
-            for name, camera in current_metadata.items():
-                check_camera(camera, name)
-            for name, provider in providers.items():
-                rgba = np.dstack((images[name], np.full((HEIGHT, WIDTH, 1), 255, dtype=np.uint8)))
-                provider.set_bytes_data(rgba.flatten().data, [WIDTH, HEIGHT])
-            guides.MakeVisible()
             sim.render()
-            captures += 1
+            viewport_renders += 1
             time.sleep(.05)
         final_joints, final_cube = physical_state()
         joint_change = float(np.abs(final_joints - initial_joints).max())
         cube_change = float(np.linalg.norm(final_cube[:3] - initial_cube[:3]))
         quaternion_change = float(min(np.linalg.norm(final_cube[3:] - initial_cube[3:]),
                                       np.linalg.norm(final_cube[3:] + initial_cube[3:])))
-        report = dict(schema='so101-stationary-scene-check-1.0', calibration_sha256=CALIBRATION_SHA256,
+        report = dict(schema='so101-stationary-scene-check-1.1', calibration_sha256=CALIBRATION_SHA256,
                       cameras=metadata, reset_physics_steps=initial_step,
-                      viewer_physics_steps=env.total_steps - initial_step, rendered_captures=captures,
+                      viewer_physics_steps=env.total_steps - initial_step, viewport_renders=viewport_renders,
+                      rgb_captures=1, rgb_capture_physics_step=initial_step,
+                      guide_authored_change_notices=guide_change_count,
+                      guide_changed_paths=sorted(guide_changed_paths),
                       viewer_sim_time_change_s=sim.current_time-initial_time,
                       maximum_joint_change_rad=joint_change, cube_translation_change_m=cube_change,
                       cube_quaternion_change=quaternion_change,
                       expert_started=False, recording_started=False, frames_shown=args.frames,
                       gui_panel_created=window is not None,
                       gui_selection_checked=window is not None,
-                      note='Static attachment/intrinsics checks only; GUI usability still requires human review.')
+                      note='RGB captured before guide creation at the frozen state. User guide edits are allowed; automatic rendering must not rewrite guides. Static calibration checks do not replace human UI review.')
         if args.snapshot_dir:
             (args.snapshot_dir / 'scene_check.json').write_text(json.dumps(report, indent=2) + '\n')
         if (not np.isfinite([joint_change, cube_change, quaternion_change, report['viewer_sim_time_change_s']]).all()
@@ -472,6 +491,8 @@ def inspect_scene(layout, args):
             raise RuntimeError('Stationary viewer advanced physical time or changed measured robot/cube state')
         print('[SCENE RESULT]', json.dumps(report), flush=True)
     finally:
+        if guide_observer is not None:
+            guide_observer.Revoke()
         if window is not None:
             window.destroy()
         env.cameras.clear()

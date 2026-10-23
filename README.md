@@ -126,6 +126,12 @@ recordings, generated reports/videos, caches and checkpoints remain local and
 ignored by Git. GitHub-only reviewers can read all guides and tracked results;
 local artifact paths in code examples require the workstation's preserved data.
 
+Most existing `outputs/` files are generated evidence, plans or diagnostics, not
+code needed to launch the expert. The pilot's many PNGs are its three synchronized
+lossless camera streams. Verified stale caches and disposable previews were
+cleaned; [the output inventory and retention rules](docs/REPOSITORY_AUDIT.md#generated-output-cleanup-and-retention)
+explain what remains and why.
+
 The pilot is a purpose-selected set of corners/reference poses, not a statistical
 estimate of broad task reliability. Camera extrinsics are simulation estimates,
 not a real-hardware calibration. No learned controller or sim-to-real transfer is

@@ -22,9 +22,14 @@ results and [consolidation verification](VERIFICATION.md) for interface regressi
 The unified CLI, stationary camera inspection, named official-policy preflight,
 connected guides and complete file/cleanup inventory are implemented locally.
 CPU checks and limited expert/replay physics regressions passed; exact conditions
-and remaining UI checks are in [VERIFICATION](VERIFICATION.md). One consolidated
-owner usability review of the new scene/feed panel and raw-review HTML is pending.
-No source/file/branch deletion or publication is included.
+and remaining UI checks are in [VERIFICATION](VERIFICATION.md). The owner confirmed
+the stationary camera viewer and nominal raw-review HTML are good, but reported
+`InspectionGuides` flickering/collapsing in the Stage inspector. Repeated USD
+visibility edits have been removed; a focused human recheck of that fix remains.
+The owner also requested cleanup: 73 verified generated cache/preview files were
+removed (776,310,957 bytes); pilot data, benchmark evidence, model-backbone cache
+and tracked files remain intact. No tracked-file/branch deletion or publication
+is included.
 
 ## What is pending
 
@@ -44,6 +49,9 @@ consolidation, meaningful local commits on `feat/repository-consolidation`, CPU
 tests, a stationary scene/camera diagnostic, and limited expert/replay physical
 regression without demonstration recording. Ask for one consolidated human visual
 checkpoint when the new viewing workflow is ready.
+
+Additional permission now covers inspected, disposable generated cache/preview
+cleanup only. See [the exact cleanup record and remaining candidates](REPOSITORY_AUDIT.md#generated-output-cleanup-and-retention).
 
 Not authorized: more demonstration collection, dataset augmentation, acceptance on
 behalf of the user, final protocol changes, optimizer updates, training, VLA

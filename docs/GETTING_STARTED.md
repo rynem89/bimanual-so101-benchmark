@@ -35,10 +35,13 @@ blue basket near the right. A separate **SO-101 actual policy camera feeds** pan
 shows overhead, left wrist and right wrist images. Use its selector to display
 one stream or all three. The viewport can be orbited independently; it is not a
 policy observation. Yellow lines show optical +Z. Optional axes use red X, green
-Y, blue Z. Guides are hidden during sensor capture and have no physics.
+Y, blue Z. Guides are created after sensor capture and have no physics.
 
 The cube settles during the established 180-tick reset. The subsequent inspection
-freezes task physics and refreshes RGB only. HOME wrist views need not see the
+freezes task physics. Actual RGB is captured before the display guides are added
+and stays at that same settled state while the free viewport renders. This avoids
+repeated USD visibility changes that interfere with expanding/selecting
+`/World/InspectionGuides` in the Stage panel. HOME wrist views need not see the
 cube: their useful contact views occur later in the expert trajectory. This
 viewer never picks up the cube. Close the Isaac application window to exit;
 closing only the camera panel does not close Isaac.

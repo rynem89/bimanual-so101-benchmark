@@ -60,8 +60,12 @@ K = [[366.4996338, 0,           320],
 All three streams share the current physics boundary before the next action;
 they are not separately timed viewport screenshots. Their tensors are rendered
 and checked explicitly even while planning pauses physics. The stationary viewer
-refreshes on wall time while physical time is frozen; its refresh count is not a
-new 20 Hz recorded episode.
+captures the actual sensors once at the settled, frozen state, before creating
+display guides. Its viewport keeps rendering, but it does not repeatedly hide/show
+USD geometry or recapture identical stationary RGB. This removes the repeated
+stage edits that disrupted inspection; the camera panel is labelled as frozen.
+Expert/collection sampling continues through the unchanged policy-boundary
+capture path.
 
 ## Frames and attachment implementation
 
@@ -92,8 +96,9 @@ also checks every capture, intrinsic matrix, boundary tick and sensor frame ID.
 python scripts/so101.py scene --frames --snapshot-dir outputs/scene_review
 ```
 
-This opens the live sensor panel and optical guides; the guides are hidden during
-RGB capture. The selector changes which feed panels are visible. Stage prim paths
+This opens the actual settled-state sensor panel and optical guides; RGB is
+captured before the guides exist, so guides cannot contaminate those images.
+The selector changes which feed panels are visible. Stage prim paths
 include `/World/envs/env_0/overview` and
 `/World/envs/env_0/Left_Robot/gripper/left_wrist` (right analogous). The free viewport
 is an additional presentation view. Use `expert --camera-preview <new-directory>`
