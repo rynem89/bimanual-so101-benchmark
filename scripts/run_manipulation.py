@@ -40,6 +40,8 @@ parser.add_argument('--cases-file',type=Path,help='Explicit named cube cases and
 parser.add_argument('--split',choices=('train','validation','heldout'),default='train')
 parser.add_argument('--policy-socket',type=Path,help='20 Hz learned policy in the isolated Python 3.12 environment')
 parser.add_argument('--diagnostic-front',action='store_true',help='Extra fixed front preview only; excluded from policy observations')
+parser.add_argument('--overview-profile',choices=('baseline','centered','angled_front','angled_rear','angled_left'),default='baseline')
+parser.add_argument('--compare-overviews',action='store_true',help='Same-tick diagnostic overview comparison and continuous policy camera video')
 parser.add_argument('--camera-preview',type=Path,help='Save policy camera phase snapshots; never demonstrations')
 parser.add_argument('--authorize-recording',action='store_true',help='Use only after explicit camera approval and collection authorization')
 parser.add_argument('--replay',type=Path,help='Replay raw 20 Hz commands through the shared physics/evaluator')
@@ -49,6 +51,9 @@ if '--help' in sys.argv or '-h' in sys.argv:
           'See: python scripts/inspect_task_layout.py --help')
     raise SystemExit(0)
 options, rest = parser.parse_known_args()
+if options.compare_overviews and not options.camera_preview:parser.error('--compare-overviews requires --camera-preview')
+if options.compare_overviews and (options.episodes!=1 or options.cases_file or options.suite!='nominal'):
+    parser.error('Overview comparison uses one named case/episode per fresh diagnostic directory')
 if options.record_dir and not options.authorize_recording:parser.error('Recording requires camera approval and explicit --authorize-recording')
 if options.camera_preview and (options.record_dir or options.policy_socket or options.replay):parser.error('Camera preview is expert-only and cannot record demonstrations')
 if options.record_dir or options.policy_socket or options.camera_preview:
@@ -100,7 +105,7 @@ class Episode:
     def __init__(self,sim,scene,model):
         self.sim,self.scene,self.model=sim,scene,model
         self.left,self.right,self.cube=scene['left_arm'],scene['right_arm'],scene['cube']
-        self.env=BenchmarkEnv(sim,scene,model,layout)
+        self.env=BenchmarkEnv(sim,scene,model,layout,overview_profile=options.overview_profile)
         self.ids=self.env.ids
         self.dt=sim.get_physics_dt()
         self.cube_contact=self.env.cube_contact
@@ -111,7 +116,7 @@ class Episode:
         self.camera_audit=None
         if options.camera_preview:
             from policy_cameras import CameraAudit
-            self.camera_audit=CameraAudit(options.camera_preview)
+            self.camera_audit=CameraAudit(options.camera_preview,compare_overviews=options.compare_overviews)
         self.phase='reset'
         self.failure_state=None
         self.max_tracking_m=0.
@@ -797,6 +802,7 @@ def main():
                                   carb_workers=carb.settings.get_settings().get('/plugins/carb.tasking.plugin/threadCount'),
                                   tbb_workers=carb.settings.get_settings().get('/plugins/omni.tbb.globalcontrol/maxThreadCount')),
             'controller':'learned' if options.policy_socket else ('replay' if options.replay else 'expert'),
+            'overview_profile':options.overview_profile,'compare_overviews':options.compare_overviews,
             'cases_document':cases_document,'policy_socket':str(options.policy_socket) if options.policy_socket else None,
             'replay':str(options.replay) if options.replay else None,
             'tracked_source_dirty':bool(subprocess.run(['git','diff','--quiet'],check=False).returncode),
@@ -814,7 +820,7 @@ def main():
     save()
     sim=layout.SimulationContext(layout.sim_utils.SimulationCfg(device=layout.args.device))
     cfg=layout.BimanualSceneCfg(num_envs=1,env_spacing=2.)
-    if options.record_dir or options.policy_socket or options.camera_preview:configure_cameras(cfg,diagnostic_front=options.diagnostic_front)
+    if options.record_dir or options.policy_socket or options.camera_preview:configure_cameras(cfg,diagnostic_front=options.diagnostic_front,compare_overviews=options.compare_overviews)
     cfg.left_arm.init_state.pos=layout.LEFT_BASE_M;cfg.right_arm.init_state.pos=layout.RIGHT_BASE_M
     cfg.left_arm.spawn.activate_contact_sensors=True;cfg.right_arm.spawn.activate_contact_sensors=True
     cfg.cube.spawn.activate_contact_sensors=True
@@ -937,6 +943,7 @@ def main():
         report['total_wall_s']=time.perf_counter()-PROCESS_STARTED
         report['process_cpu_s']=time.process_time()-PROCESS_CPU_STARTED
         save()
+    if episode.camera_audit:episode.camera_audit.finish()
     print('[RESULT]',report['status'],flush=True)
     if unexpected_failures:raise RuntimeError(f'{len(unexpected_failures)} unexpected failure(s); see {path}')
     if not layout.args.headless and not options.exit_after:

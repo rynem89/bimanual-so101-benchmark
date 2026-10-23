@@ -1910,3 +1910,131 @@ is authorized by merely accepting the cameras. No remote push is authorized in
 this assignment. No trained-model success, hardware calibration, automatic
 occlusion certification, Mimic/SkillGen integration or new distribution coverage
 is claimed.
+
+### Conditional camera approval and overview comparison — 23 October 2026
+
+User conditionally approved the wrist cameras, requested overview alternatives,
+matching-phase comparison, continuous synchronization/attachment evidence, a
+recommendation and one consolidated visual review. Dataset strategy/collection
+and training remain separately gated. No remote push authorized.
+
+Preserved reviewed configuration adf03b4 with local annotated tag
+`reference/camera-v2-reviewed`. Original overview is retained as the baseline
+profile; default selection remains baseline pending final framing approval.
+Wrist extrinsics, optics, resolution and parent links are unchanged.
+
+Measured baseline transport/handover cube position is approximately
+(0,-0.270,0.178/0.174)m, rather than the provisional scene-constant handover Y.
+Used measured working area to design fixed overview alternatives in world metres:
+
+| Profile | Eye | Look-at target |
+| --- | --- | --- |
+| baseline | (0,-0.10,0.72) | (0,-0.10,0.02) |
+| centered | (0,-0.20,0.78) | (0,-0.20,0.02) |
+| angled_front | (0,0.07,0.78) | (0,-0.18,0.02) |
+| angled_rear | (0,-0.45,0.78) | (0,-0.18,0.02) |
+| angled_left | (-0.25,-0.18,0.78) | (0,-0.18,0.02) |
+
+All use the same640x480/12mm focal/20.955mm aperture/0.01–10m clip and fixed world
+pose for the entire run. Front/rear/left inclinations are about18.2/19.6/18.2degrees
+from vertical. Initial reset-only screening (overview_v3_startup.log) tested
+steeper front/rear views; they left excess background, so reduced inclinations
+were chosen before the full comparison. Screening did not certify task framing.
+Diagnostic sensors review_* are separate from the three policy input keys.
+
+All five alternatives are rendered in a single deterministic episode and read
+at the same physical ticks as the three policy tensors; no scene replay, cloned
+object state or controller action changes are used to compare views. The
+comparison flag records continuous20Hz policy RGB video and a JSONL clock/frame/
+pose/hash audit under outputs only, without demonstration action labels. Sparse
+matching-phase images show all alternatives. Cube corner projections use ground
+truth only in this diagnostic; frustum inclusion is not an occlusion test.
+Red-pixel counts are an appearance-specific proxy, not certified visible area.
+
+Camera continuity tests reject missing3-tick samples, reversed time, stale
+sensor frame IDs, missing streams and invalid reset-relative timestamps. Initial
+preview and first action at the same physical tick produce one video frame.
+Attachment assertions execute at every captured20Hz boundary, not just phase
+snapshots. RGB hashes expose repeated frames for review, without failing legitimate
+stationary observations merely because they repeat.
+
+CPU regression:39/39 passed70.738s, outputs/controller/overview_v3_tests.log.
+Source AST comparison against adf03b4 verified Episode.step/run/move/move_right and
+BenchmarkEnv.advance/step/reset/_read unchanged. Model, planner, independent
+evaluator, scene/actuator configuration and dataset_io.py are byte-identical.
+Only camera configuration, diagnostic capture and orchestration options changed.
+
+Exact comparison command (after existing simulation environment activation):
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/run_manipulation.py \
+  --headless --cpu-threads 8 --stage full --motion-mode continuous \
+  --expert-hz 20 --grip-feedback-from-lift --compare-overviews \
+  --camera-preview outputs/camera_overview_v3/comparison \
+  --output-dir outputs/controller/overview_v3_comparison
+```
+
+For human GUI reproduction omit --headless and choose a fresh preview/output
+root. Camera parameters never change during an episode. Final approval will
+identify a named profile and exact recorded calibration/source revision; no
+adaptive reframing or silent parameter tuning is permitted after approval.
+
+Overview comparison completed, exit0. Report:
+outputs/controller/overview_v3_comparison/full_20261023T142830953036Z.json;
+log overview_v3_comparison.log. Independent full success153.1833333simulated seconds,
+zero forbidden collisions, peak2.011003rad/s/1.349620Nm. Every independent stage
+passed. Elapsed time, peak speed/effort and the COMPLETE transfer trace exactly
+match camera_v2_synchronized/full_20261023T085954936832Z.json. This supports that
+extra rendering/diagnostics did not alter this nominal task's measured behaviour;
+it does not establish general robustness or wall-time performance.
+
+50 sparse snapshots and nine selected phases compare all five views at identical
+physical ticks. All eight projected cube corners were inside every candidate's
+frustum in all50samples. This tests projection bounds, not occlusion or robot
+mesh clipping. Red-pixel proxy sums across selected phases were baseline4635,
+centered3527, front3341,rear3149,left3358; these are not a ranking of policy quality.
+The left angle showed605red pixels initially but only1during lift/hold, a poor
+whole-task tradeoff. The centered view balances handover margin, stable global
+orientation, cube/bin context and less perspective/background than the oblique
+alternatives. Recommendation: centered, pending final human approval. Do not
+silently switch the production default away from baseline before approval.
+
+Recommended overview eye(0,-0.20,0.78)m, target(0,-0.20,0.02)m; ideal ROS wxyz
+(0,1,0,0). Recorded float quaternion is approximately(7.45e-9,1,-1.44e-8,1.44e-8).
+Optics unchanged:12mm focal,20.955mm aperture,640x480RGB,fx=fy366.4996338px,
+principal point(320,240),82.25005degree horizontalFOV,0.01–10m clip,20Hz observations.
+Wrist offsets/rotations remain exactly as previously documented and conditionally
+approved. Calibration is an initial simulation estimate, not measured hardware.
+Proposed calibration hash36b7a6f81433eb927ee69e0e3a42057fc74ec359da14fa00d7919f440fce0592,
+with full parameters in outputs/camera_overview_v3/comparison/proposed_calibration.json.
+Parameters are fixed per run. Final approval must pin this profile/calibration
+and source revision; subsequent changes require a new calibration review.
+
+Continuous diagnostic evidence:3064unique RGB frames per policy camera,20Hz,
+first/last physical ticks180/9369, every interval3ticks. Sensor frame IDs strictly
+increase; actual wrist attachment checked at each observation. Independent
+imageio_ffmpeg count/decode confirmed3064encoded frames and153.2seconds, matching
+continuity.jsonl. independent_verification.json records checks and colour-framing
+proxies. Software physical-step stamps are not independently measured RTX or
+real-camera exposure timestamps. A final continuity-failure flag improvement
+records failed checks instead of hard-coding success; five targeted camera tests
+passed again after that and offline review-rendering additions. No optics,
+extrinsics or physics changed after the full run.
+
+One consolidated human review: outputs/camera_overview_v3/comparison/recommended_review.jpg
+(original overview / proposed centered / original wrist images, matching ticks).
+All alternatives: overview_comparison.jpg. Continuous video policy_streams_20hz.mp4
+uses original baseline overview plus unchanged wrists; do not mislabel that video
+as proposed-centered-camera playback. Sparse comparison images contain the actual
+centered sensor pixels, not a crop or reprojected original image. Rebuild figures:
+
+```bash
+python scripts/policy_cameras.py --build-review outputs/camera_overview_v3/comparison --recommend centered
+```
+
+The inspector and figure builder write only diagnostic outputs. No demonstrated
+actions/learning records, model weights or optimizer steps were generated. Dataset
+and checkpoint directories remain empty. Camera approval and demonstration-strategy
+approval are separate gates. No dependencies, assets, driver or system settings
+changed, and no remote push was performed. Further camera work pauses at the
+consolidated human review.

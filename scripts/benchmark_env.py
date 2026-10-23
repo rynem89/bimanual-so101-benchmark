@@ -16,14 +16,15 @@ import omni.physics.tensors as tensors
 from so101_model import JOINT_NAMES, LINK_NAMES, transform
 from benchmark_core import Frame, TaskEvaluator, TaskSpec
 
-from policy_cameras import NAMES, HEIGHT, WIDTH, WRIST_POSITION, WRIST_ROTATION, configure_cameras, check_attachment
+from policy_cameras import NAMES, HEIGHT, WIDTH, WRIST_POSITION, WRIST_ROTATION, configure_cameras, check_attachment, OVERVIEW_PROFILES
 
-CAMERA_VIEWS = {'overview': ((0., -.10, .72), (0., -.10, .02))}
+CAMERA_VIEWS = {'overview': OVERVIEW_PROFILES['baseline']}
 
 
 class BenchmarkEnv:
-    def __init__(self, sim, scene, model, layout):
+    def __init__(self, sim, scene, model, layout, overview_profile: str="baseline"):
         self.sim, self.scene, self.model, self.layout = sim, scene, model, layout
+        self.overview_view=OVERVIEW_PROFILES[overview_profile]
         self.arms = [scene['left_arm'], scene['right_arm']]
         self.cube = scene['cube']
         self.ids = [layout.joint_index(self.arms[0], name) for name in JOINT_NAMES]
@@ -56,9 +57,13 @@ class BenchmarkEnv:
         self.cameras={name:scene.sensors[name] for name in NAMES if name in scene.sensors}
         for name,camera in self.cameras.items():
             if name != 'overview':continue
-            eye,target=CAMERA_VIEWS[name]
+            eye,target=self.overview_view
             camera.set_world_poses_from_view(torch.tensor([eye],device=sim.device),
                                             torch.tensor([target],device=sim.device))
+        for profile,(eye,target) in OVERVIEW_PROFILES.items():
+            if 'review_'+profile in scene.sensors:
+                scene.sensors['review_'+profile].set_world_poses_from_view(
+                    torch.tensor([eye],device=sim.device),torch.tensor([target],device=sim.device))
         if 'front' in scene.sensors:
             scene.sensors['front'].set_world_poses_from_view(
                 torch.tensor([[0.,.72,.56]],device=sim.device),torch.tensor([[0.,-.14,.12]],device=sim.device))
@@ -98,6 +103,18 @@ class BenchmarkEnv:
         self.timings['camera']+=time.perf_counter()-started
         return images
 
+    def capture_overviews(self):
+        """Read all comparison tensors after the SAME render as policy cameras."""
+        images={}
+        for profile in OVERVIEW_PROFILES:
+            camera=self.scene.sensors['review_'+profile]
+            camera.update(0.,force_recompute=True)
+            rgb=camera.data.output['rgb'][0,:,:,:3].cpu().numpy().copy()
+            if rgb.shape!=(HEIGHT,WIDTH,3) or rgb.dtype!=np.uint8:
+                raise RuntimeError('Invalid overview comparison image')
+            images[profile]=rgb
+        return images
+
     def camera_metadata(self):
         """Verify actual sensor poses against current rigid-link poses, not desired joints."""
         result={}
@@ -113,7 +130,7 @@ class BenchmarkEnv:
                 state=self.arms[side].root_physx_view.get_link_transforms()[0,body].cpu().numpy()
                 parent_rotation=Rotation.from_quat(state[3:7]).as_matrix()
                 check_attachment(pos,rotation,state[:3],parent_rotation)
-            elif name == 'overview' and not np.allclose(pos,CAMERA_VIEWS[name][0],atol=1e-6,rtol=0):
+            elif name == 'overview' and not np.allclose(pos,self.overview_view[0],atol=1e-6,rtol=0):
                 raise RuntimeError('Overview camera position mismatch')
             intrinsic=camera.data.intrinsic_matrices[0].cpu().numpy()
             if not np.isfinite(intrinsic).all() or min(intrinsic[0,0],intrinsic[1,1])<=0:

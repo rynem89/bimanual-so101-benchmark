@@ -8,11 +8,13 @@ there are currently **no demonstration datasets or model checkpoints**.
 ## Current boundaries
 
 - Work branch: `feat/il-camera-dataset-v2`; preserved reference tag:
-  `reference/pre-il-camera-v2` at `f47c358`. Main and remote branches are untouched.
+  `reference/pre-il-camera-v2` at `f47c358`. Main and remote branches are untouched. The reviewed three-camera setup is also
+  preserved at tag `reference/camera-v2-reviewed` (`adf03b4`).
 - The historical expert completed the task, including the visually verified
   minus-one-degree recovery at `fb408f5`. Existing physical success criteria remain.
 - Camera v2 passed automated attachment/timing checks and one full nominal
-  physics regression; human approval of this initial simulation calibration is pending. Do not collect demonstrations or train before that approval.
+  physics regression. The user conditionally approved both wrist views; final
+  overview approval is pending. Collection strategy and training require separate authorization.
 - All old learning artifacts in `datasets/` and `checkpoints/` were deleted with
   user authorization. Exact inventory and sizes are in the engineering handoff.
   Output evidence and old policy traces were retained; deletion of traces is only
@@ -59,29 +61,29 @@ python scripts/run_manipulation.py --cpu-threads 8 --stage full \
   --motion-mode continuous --expert-hz 20 --grip-feedback-from-lift
 ```
 
-Camera inspection, also in the simulation environment (choose a fresh output
-folder each time; the inspector refuses to overwrite an existing folder):
+Camera inspection of the **recommended overview**, also in the simulation
+environment (choose a fresh output folder every run):
 
 ```bash
 python scripts/run_manipulation.py --cpu-threads 8 --stage full \
   --motion-mode continuous --expert-hz 20 --grip-feedback-from-lift \
-  --camera-preview outputs/camera_v2/manual_review \
-  --output-dir outputs/controller/camera_v2_manual
+  --overview-profile centered --camera-preview outputs/camera_overview_v3/manual_review \
+  --output-dir outputs/controller/overview_v3_manual
 ```
 
-GUI is the default. `--headless` is only an explicit optional test flag. The
-ordinary viewport is not the policy observation. Open the side-by-side images in
-the preview directory: overview, left wrist and right wrist are captured from
-actual synchronized RGB tensors. `audit.json` records physical ticks, phase,
-actual extrinsics and intrinsics. Snapshots cover initial, approach, closure,
-lift, transfer, receiver closure, transport and release/settling phases. They
-contain no action trajectory and are not a demonstration dataset.
+The default profile remains `baseline` until the user approves the proposal.
+`centered` is an explicit fixed selection for the whole run; both wrists remain
+unchanged. GUI is the default. The ordinary viewport is not the policy input.
+Open the generated side-by-side actual-tensor images and `audit.json`.
 
-Check whether the cube and finger contacts remain visible in the relevant wrist
-view, including approach and receiver takeover. Inspect the basket framing during
-right transport/release. Human camera acceptance is required before collection.
-A successful GUI run stays at `[VIEWER]`; failed runs can close with exit 1.
-Read the physical result JSON; image capture alone is not manipulation success.
+The comparison accepts one named case/episode per fresh diagnostic directory.
+To repeat all five overview alternatives at identical physical times, add
+`--compare-overviews` to that command. This enables diagnostic-only `review_*`
+sensors, a continuous three-policy-stream video, and frame/attachment checks at
+every 20 Hz boundary. The additional cameras never enter policy observations.
+These outputs contain no demonstration action labels and stay under `outputs/`.
+A successful GUI run stays at `[VIEWER]`; read the independent physical result
+JSON as well as the images. Failed runs can close with exit 1.
 
 ## Camera architecture and calibration
 
@@ -92,7 +94,12 @@ approximately 82.25° horizontal FOV, fx=fy≈366.50 pixels, centre=(320,240),
 clipping 0.01–10 m. These are a plausible downsampled UVC-camera projection,
 not measured specifications of the eventual physical lens.
 
-The overview eye is (0, −0.10, 0.72) m, looking at (0, −0.10, 0.02) m.
+The preserved baseline overview eye is (0, −0.10, 0.72) m, looking at
+(0, −0.10, 0.02) m. **The proposed `centered` profile** moves the fixed camera to
+(0, −0.20, 0.78) m and looks at (0, −0.20, 0.02) m. Its ideal ROS wxyz orientation
+is (0,1,0,0), looking vertically down. The proposal uses the same optics,
+resolution and frame rate as the baseline. It is an overhead gantry placement
+that can later be measured on a physical workcell, not a real-camera calibration.
 Wrist sensors are children of `Left_Robot/gripper` and `Right_Robot/gripper`.
 The selected upstream hex-nut mount attaches to the wrist-roll housing, whose
 mesh belongs to this rigid gripper link. It does not follow the moving jaw.
@@ -185,31 +192,59 @@ run and full official-checkpoint inference remain unverified until later gates.
 ACT versus Diffusion comparison must use agreed data/budgets, independent physical
 evaluation, full attempted-case denominators and explicit observation privileges.
 
-## Evidence ready for camera review
+## Consolidated overview review and recommendation
 
-Final CPU regression: **37/37 passed** in 69.868 seconds, including optical-frame,
-wrong-parent/rotation, RGB and timestamp checks. Exact commands and logs are in
-the [handoff](docs/ROBOTICS_CODEX_HANDOFF.md).
+Open [the consolidated review](outputs/camera_overview_v3/comparison/recommended_review.jpg):
+columns are **original overview / proposed centered overview / unchanged left
+wrist / unchanged right wrist**. Nine rows show identical physics ticks during
+initial placement, approach, gripping, lift/hold, receiver gripping, right-only
+hold, bin transport, release and settling.
 
-The complete nominal camera-enabled run passed all independent stages in
-153.1833 simulated seconds, with zero forbidden collisions, peak speed
-2.0110 rad/s and peak effort 1.3496 Nm. Its report is
-`outputs/controller/camera_v2_synchronized/full_20261023T085954936832Z.json`.
-The physical regression used the default three-camera configuration; the optional
-front diagnostic was separately checked in a reset-only run. Full history and
-source hashes remain in those local reports. This is one nominal regression,
-not validation of a varied collection distribution or real hardware.
+I recommend `centered`. It gives the handover more image-edge margin and keeps
+the global orientation and cube/bin context easy to read. The front/rear angled
+views were also tested (about 18–20° from vertical); they introduce perspective
+compression and more unused image area. The left-side angle improves the initial
+cube view but heavily occludes it during lift. No tested view eliminates every
+occlusion. Both wrists supply local contact detail; the overview supplies global
+context. This is a recommendation among five candidates on one nominal episode,
+not a globally optimal camera or validation of a future varied distribution.
 
-Open the existing review files without rerunning simulation:
+Supporting files:
 
-- [Eight-phase contact sheet](outputs/camera_v2/synchronized/review_contact_sheet.jpg)
-- [All 51 phase snapshots and audit.json](outputs/camera_v2/synchronized/)
+- [All five alternatives at the same nine phases](outputs/camera_overview_v3/comparison/overview_comparison.jpg)
+- [Continuous 20 Hz policy video](outputs/camera_overview_v3/comparison/policy_streams_20hz.mp4): original overview plus the unchanged wrists; the proposed overview is shown in the comparison sheets.
+- [Proposed calibration](outputs/camera_overview_v3/comparison/proposed_calibration.json), including exact extrinsics/intrinsics and calibration SHA-256.
+- [Independent frame/video checks](outputs/camera_overview_v3/comparison/independent_verification.json), plus `continuity.jsonl` and `audit.json` in the same directory.
 
-The left/right wrist view follows its arm and shows the held cube at a larger
-scale. The overview still has hand occlusion and the transfer region approaches
-its lower edge. Camera acceptance must assess these limitations. An automatic
-occlusion/visibility score has not been implemented. The next gate is the user's
-visual decision; approval does not authorize training or collection by itself.
+Verification: **39/39 CPU tests passed** in 70.738 s. Full nominal physics passed
+in **153.1833 simulated seconds**, zero forbidden collisions, peak 2.0110 rad/s
+and 1.3496 Nm. These metrics and the complete transfer trace exactly match the
+reviewed baseline. The controller, planner, evaluator, scene and actuation logic
+remain unchanged. The local report is
+`outputs/controller/overview_v3_comparison/full_20261023T142830953036Z.json`.
+
+Independent decoding confirmed **3,064 video frames / 153.2 s at 20 Hz**, physical
+ticks 180–9,369 with no gaps or reordered samples. Both wrist attachments passed
+at every logged observation; all three sensor frame IDs advanced monotonically.
+These are software/physics synchronization checks, not independent hardware
+exposure timestamps. Ground-truth cube projections stayed inside every candidate
+frustum at the 50 sparse checks; that does not certify lack of occlusion. Colour
+visibility/border statistics are only scene-specific proxies.
+
+The proposed calibration has SHA-256
+`36b7a6f81433eb927ee69e0e3a42057fc74ec359da14fa00d7919f440fce0592`.
+It remains **pending final approval**. Once approved, retain that named profile,
+source revision, intrinsics and wrist mounting transforms; change them only in a
+new reviewed calibration version. No automatic reframing is used. Camera approval
+will not authorize dataset generation or training: the demonstration-generation
+strategy must be agreed separately. Both artifact roots remain empty.
+
+To rebuild the figures without running simulation:
+
+```bash
+python scripts/policy_cameras.py --build-review outputs/camera_overview_v3/comparison \
+  --recommend centered
+```
 
 Future inference after a separately approved official training run uses two
 activated shells. In the training shell, choose the matching method and official
@@ -252,8 +287,8 @@ training command.
 
 | File | Responsibility and inputs → outputs | How it is used |
 | --- | --- | --- |
-| [scripts/policy_cameras.py](scripts/policy_cameras.py) | Project-owned camera configuration, optical transforms and sparse phase contact sheets | Used by `--camera-preview`; no training records |
-| [tests/test_policy_cameras.py](tests/test_policy_cameras.py) | Optical axes, missing cameras, RGB shapes and 20 Hz clock guards | CPU unittest |
+| [scripts/policy_cameras.py](scripts/policy_cameras.py) | Camera profiles, optical transforms, continuity checks, comparison sheets and diagnostic video | Used by `--camera-preview`; no training records |
+| [tests/test_policy_cameras.py](tests/test_policy_cameras.py) | Optical axes, attachment, RGB, reset-relative clock and continuous-frame rejection tests | CPU unittest |
 | [configs/camera_v2_pilot.json](configs/camera_v2_pilot.json) | One nominal, explicitly unapproved pilot manifest | Edit/approve before user-authorized collection |
 | [assets/camera_mount/README.md](assets/camera_mount/README.md) | Upstream optional mesh provenance, units, license and limitations | Reference only; not spawned |
 | [scripts/policy_pipeline.py](scripts/policy_pipeline.py) | Raw folders → LeRobot dataset; dataset metadata → official training command; RGB/joints → predicted targets | Training environment: `convert`, `prepare-training`, `serve` commands above |

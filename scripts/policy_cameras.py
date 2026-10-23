@@ -11,6 +11,15 @@ from PIL import Image, ImageDraw
 
 NAMES = ('overview', 'left_wrist', 'right_wrist')
 HEIGHT, WIDTH = 480, 640
+# Candidate poses are fixed in world metres for an entire run. Wrist geometry
+# and intrinsics stay identical across this overview-only comparison.
+OVERVIEW_PROFILES = {
+    'baseline': ((0., -.10, .72), (0., -.10, .02)),
+    'centered': ((0., -.20, .78), (0., -.20, .02)),
+    'angled_front': ((0., .07, .78), (0., -.18, .02)),
+    'angled_rear': ((0., -.45, .78), (0., -.18, .02)),
+    'angled_left': ((-.25, -.18, .78), (0., -.18, .02)),
+}
 # Wrist roll housing is the rigid gripper link, not the articulated moving jaw.
 WRIST_POSITION = np.array([0.0141, -0.045, 0.005])
 WRIST_TARGET = np.array([0.0141, 0., -0.09])
@@ -27,7 +36,7 @@ WRIST_ROTATION = optical_rotation(WRIST_POSITION, WRIST_TARGET)
 WRIST_QUAT = tuple(Rotation.from_matrix(WRIST_ROTATION).as_quat()[[3,0,1,2]])
 
 
-def configure_cameras(scene_cfg, diagnostic_front: bool=False):
+def configure_cameras(scene_cfg, diagnostic_front: bool=False, compare_overviews: bool=False):
     from isaaclab.sensors import Camera, CameraCfg
     from isaaclab.utils.math import convert_camera_frame_orientation_convention
 
@@ -50,6 +59,16 @@ def configure_cameras(scene_cfg, diagnostic_front: bool=False):
             update_latest_camera_pose=True,
             spawn=PinholeCameraCfg(focal_length=12., horizontal_aperture=20.955,
                                   clipping_range=(.01, 10.))))
+
+    if compare_overviews:
+        # Diagnostic-only sensors never enter NAMES or the policy observation.
+        for profile in OVERVIEW_PROFILES:
+            setattr(scene_cfg, 'review_'+profile, CameraCfg(
+                class_type=ArticulatedCamera, prim_path='{ENV_REGEX_NS}/review_'+profile,
+                update_period=0., height=HEIGHT,width=WIDTH,data_types=['rgb'],
+                update_latest_camera_pose=True,
+                spawn=PinholeCameraCfg(focal_length=12.,horizontal_aperture=20.955,
+                                      clipping_range=(.01,10.))))
 
     if diagnostic_front:
         scene_cfg.front = CameraCfg(prim_path='{ENV_REGEX_NS}/front', update_period=0.,
@@ -75,20 +94,74 @@ def check_attachment(position: np.ndarray, rotation: np.ndarray,
         raise RuntimeError('Camera attachment rotation mismatch')
 
 
+class CaptureContinuity:
+    """Check every policy frame, including motion between sparse phase images."""
+    def __init__(self):
+        self.last_step = None
+        self.last_frame_ids = None
+        self.count = 0
+        self.failure = None
+
+    def _fail(self, message: str):
+        self.failure=message
+        raise ValueError(message)
+
+    def accept(self, step: int, origin: int, frame_ids: dict) -> bool:
+        if step < origin or (step-origin)%3:
+            self._fail('Camera timestamp is not a 20 Hz boundary')
+        if set(frame_ids) != set(NAMES):
+            self._fail('Missing policy frame identifiers')
+        if step == self.last_step:
+            return False  # Initial phase and first action share a physical tick.
+        if self.last_step is not None:
+            if step-self.last_step != 3:
+                self._fail('Missing or reordered policy camera frame')
+            if any(frame_ids[n] <= self.last_frame_ids[n] for n in NAMES):
+                self._fail('Camera sensor frame did not advance')
+        self.last_step = step
+        self.last_frame_ids = frame_ids.copy()
+        self.count += 1
+        return True
+
+
 class CameraAudit:
-    """Sparse phase snapshots from actual tensors, not demonstrations or viewport screenshots."""
-    def __init__(self, root: Path):
+    """Actual tensor previews; comparison adds continuous camera diagnostics only."""
+    def __init__(self, root: Path, compare_overviews: bool=False):
         self.root=root; root.mkdir(parents=True,exist_ok=False)
         self.seen=set();self.rows=[];self.last_phase=None;self.phase_ticks=0
+        self.compare_overviews=compare_overviews
+        self.continuity=CaptureContinuity()
+        self.video=None;self.continuity_file=None
+        self.hashes={name:set() for name in NAMES}
+        if compare_overviews:
+            import imageio_ffmpeg
+            self.video=imageio_ffmpeg.write_frames(str(root/'policy_streams_20hz.mp4'),
+                (WIDTH*3,HEIGHT),fps=20,codec='libx264',quality=6,
+                output_params=['-preset','veryfast','-threads','2'])
+            self.video.send(None)
+            self.continuity_file=(root/'continuity.jsonl').open('w')
 
     def capture(self, env, phase: str, force: bool=False):
         if phase != self.last_phase:self.phase_ticks=0;self.last_phase=phase
         self.phase_ticks+=3
-        # Capture phase entry and a later sample, allowing short grasp phases.
         key=(phase, 'entry' if self.phase_ticks==3 else 'settled')
-        if not force and (key in self.seen or (key[1]=='settled' and self.phase_ticks<60)):return
+        sparse=force or (key not in self.seen and (key[1]=='entry' or self.phase_ticks>=60))
+        if not sparse and not self.compare_overviews:return
+        if self.compare_overviews and env.total_steps==self.continuity.last_step:return
         images=env.capture_images();check_capture(images,env.total_steps,env.policy_origin_step)
-        metadata=env.camera_metadata()
+        metadata=env.camera_metadata()  # Independently checks both wrist attachments.
+        if self.compare_overviews:
+            import hashlib
+            ids={name:int(env.cameras[name].frame[0]) for name in NAMES}
+            self.continuity.accept(env.total_steps,env.policy_origin_step,ids)
+            digests={name:hashlib.sha256(rgb.tobytes()).hexdigest() for name,rgb in images.items()}
+            for name,digest in digests.items():self.hashes[name].add(digest)
+            self.continuity_file.write(json.dumps(dict(index=self.continuity.count-1,
+                physics_step=env.total_steps,relative_time_s=(env.total_steps-env.policy_origin_step)/60,
+                sensor_frame_ids=ids,rgb_sha256=digests,cameras=metadata))+'\n')
+            self.continuity_file.flush()
+            self.video.send(np.concatenate([images[n] for n in NAMES],axis=1))
+        if not sparse:return
         row=dict(phase=phase,sample=key[1],physics_step=env.total_steps,
                  time_s=env.total_steps/60,cameras=metadata)
         canvas=Image.new('RGB',(WIDTH*3,HEIGHT+28),'white')
@@ -97,10 +170,140 @@ class CameraAudit:
             ImageDraw.Draw(canvas).text((i*WIDTH+8,6),f'{phase} {key[1]} | {name} | tick {env.total_steps}',fill='black')
         file=f'{len(self.rows):03d}_{phase}_{key[1]}.jpg'
         canvas.save(self.root/file,quality=95);row['image']=file
+        if self.compare_overviews:
+            candidates=env.capture_overviews()
+            comparison=Image.new('RGB',(WIDTH*len(candidates),HEIGHT+28),'white')
+            measures={}
+            for i,(name,rgb) in enumerate(candidates.items()):
+                comparison.paste(Image.fromarray(rgb),(i*WIDTH,28))
+                ImageDraw.Draw(comparison).text((i*WIDTH+8,6),f'{phase} | {name} | tick {env.total_steps}',fill='black')
+                measures[name]=overview_measurement(rgb,env.scene.sensors['review_'+name],env.frame)
+            name=file.removesuffix('.jpg')+'_overviews.jpg'
+            comparison.save(self.root/name,quality=95)
+            row.update(overview_comparison=name,overview_measurements=measures)
         if 'front' in env.scene.sensors:
             front=env.scene.sensors['front'];front.update(0.,force_recompute=True)
             rgb=front.data.output['rgb'][0,:,:,:3].cpu().numpy()
             Image.fromarray(rgb).save(self.root/(file.removesuffix('.jpg')+'_diagnostic_front.png'))
         self.rows.append(row);self.seen.add(key)
-        (self.root/'audit.json').write_text(json.dumps(dict(schema='so101-camera-audit-1',
-            note='Diagnostic snapshots only; no demonstration actions or training data',samples=self.rows),indent=2))
+        (self.root/'audit.json').write_text(json.dumps(dict(schema='so101-camera-audit-2',
+            note='Camera diagnostics only; no demonstration targets or training data',
+            overview_profiles=OVERVIEW_PROFILES,samples=self.rows),indent=2))
+
+    def finish(self):
+        if self.video is not None:self.video.close();self.video=None
+        if self.continuity_file is not None:self.continuity_file.close();self.continuity_file=None
+        if self.compare_overviews:
+            (self.root/'continuity_summary.json').write_text(json.dumps(dict(
+                observations=self.continuity.count,physics_ticks_per_observation=3,fps=20,
+                missing_or_reordered_frames=0 if self.continuity.failure is None else None,
+                validation_failure=self.continuity.failure,
+                attachment_checks='passed for every logged camera frame; physical termination is reported separately',
+                unique_rgb_frames={name:len(hashes) for name,hashes in self.hashes.items()},
+                note='Physical step stamps are software synchronization checks, not independent RTX exposure timestamps.'),indent=2))
+            build_overview_review(self.root)
+
+
+def overview_measurement(rgb: np.ndarray, camera, frame) -> dict:
+    """Diagnostic ground-truth projection plus a red-pixel proxy; never policy input."""
+    from itertools import product
+    pose=frame.cube_pose()
+    corners=np.array(list(product((-.02,.02),repeat=3)))@pose[:3,:3].T+pose[:3,3]
+    q=camera.data.quat_w_ros[0].cpu().numpy()
+    rotation=Rotation.from_quat(q[[1,2,3,0]]).as_matrix()
+    local=(corners-camera.data.pos_w[0].cpu().numpy())@rotation
+    k=camera.data.intrinsic_matrices[0].cpu().numpy()
+    pixels=local@k.T;pixels=pixels[:,:2]/pixels[:,2,None]
+    inside=(local[:,2]>.01)&(pixels[:,0]>=0)&(pixels[:,0]<WIDTH)&(pixels[:,1]>=0)&(pixels[:,1]<HEIGHT)
+    # Only the cube is red in this nominal scene. This is not a segmentation
+    # ground truth or certified visibility fraction under appearance changes.
+    red=(rgb[:,:,0]>100)&(rgb[:,:,0]>1.35*rgb[:,:,1])&(rgb[:,:,0]>1.35*rgb[:,:,2])
+    return dict(cube_all_projected_corners_in_frame=bool(inside.all()),
+        cube_projected_bounds_px=[pixels.min(0).tolist(),pixels.max(0).tolist()],
+        red_pixel_proxy=int(red.sum()),
+        position_world_m=camera.data.pos_w[0].cpu().tolist(),
+        quaternion_ros_wxyz=q.tolist(),intrinsic=k.tolist())
+
+
+def build_overview_review(root: Path):
+    audit=json.loads((root/'audit.json').read_text())
+    phases=['initial','pregrasp','close','hold','right_close','right_only_hold','right_to_bin','bin_release','bin_settle']
+    selected=[]
+    for phase in phases:
+        rows=[r for r in audit['samples'] if r['phase']==phase]
+        if rows:selected.append(rows[-1])
+    # One artifact compares ALL alternatives at identical physical times.
+    from PIL import ImageFont
+    font=ImageFont.truetype('DejaVuSans.ttf',17)
+    small=ImageFont.truetype('DejaVuSans.ttf',14)
+    sheet=Image.new('RGB',(320*len(OVERVIEW_PROFILES),70+270*len(selected)),(245,245,245))
+    draw=ImageDraw.Draw(sheet)
+    for j,(name,(eye,target)) in enumerate(OVERVIEW_PROFILES.items()):
+        draw.text((j*320+8,5),name,font=font,fill='black')
+        draw.text((j*320+8,29),f'eye {eye} m',font=small,fill='black')
+        draw.text((j*320+8,47),f'target {target} m',font=small,fill='black')
+    for i,row in enumerate(selected):
+        original=Image.open(root/row['overview_comparison'])
+        y=70+270*i
+        draw.text((8,y+4),f"{row['phase']} | physics tick {row['physics_step']} (all views identical time)",font=font,fill='black')
+        for j in range(len(OVERVIEW_PROFILES)):
+            cell=original.crop((j*WIDTH,28,(j+1)*WIDTH,HEIGHT+28)).resize((320,240),Image.Resampling.LANCZOS)
+            sheet.paste(cell,(j*320,y+30))
+    sheet.save(root/'overview_comparison.jpg',quality=95)
+    scores={name:dict(full_cube_in_frame_samples=sum(r['overview_measurements'][name]['cube_all_projected_corners_in_frame'] for r in audit['samples']),
+        samples=len(audit['samples']),red_pixel_sum=sum(r['overview_measurements'][name]['red_pixel_proxy'] for r in selected)) for name in OVERVIEW_PROFILES}
+    (root/'comparison_summary.json').write_text(json.dumps(dict(profiles=OVERVIEW_PROFILES,
+        selected_ticks={r['phase']:r['physics_step'] for r in selected},measurements=scores,
+        warning='Projection tests frustum bounds only. Red pixels are a colour proxy; human occlusion/framing review is required.'),indent=2))
+
+
+def build_recommended_review(root: Path, profile: str):
+    """Consolidated same-tick original/proposal/wrist sheet; no simulator runs."""
+    import hashlib
+    from PIL import ImageFont
+    audit=json.loads((root/'audit.json').read_text())
+    profiles=list(audit['overview_profiles'])
+    column=profiles.index(profile)
+    phases=['initial','pregrasp','close','hold','right_close','right_only_hold','right_to_bin','bin_release','bin_settle']
+    selected=[[r for r in audit['samples'] if r['phase']==phase][-1] for phase in phases]
+    font=ImageFont.truetype('DejaVuSans.ttf',17)
+    small=ImageFont.truetype('DejaVuSans.ttf',14)
+    sheet=Image.new('RGB',(1280,90+270*len(selected)),(245,245,245))
+    draw=ImageDraw.Draw(sheet)
+    headings=['Original overview', 'Proposed '+profile, 'Left wrist (unchanged)', 'Right wrist (unchanged)']
+    for j,label in enumerate(headings):draw.text((j*320+8,5),label,font=font,fill='black')
+    eye,target=audit['overview_profiles'][profile]
+    draw.text((8,33),f'Proposed world eye {eye} m; target {target} m | 640x480 RGB | 20 Hz | final approval pending',font=small,fill='black')
+    draw.text((8,54),'All four cells in each row share the same physics tick. Wrist images are the approved original sensor streams.',font=small,fill='black')
+    for i,row in enumerate(selected):
+        y=90+270*i
+        draw.text((8,y+4),f"{row['phase']} | physics tick {row['physics_step']}",font=font,fill='black')
+        overview=Image.open(root/row['overview_comparison'])
+        policy=Image.open(root/row['image'])
+        cells=[overview.crop((0,28,WIDTH,HEIGHT+28)),
+               overview.crop((column*WIDTH,28,(column+1)*WIDTH,HEIGHT+28)),
+               policy.crop((WIDTH,28,2*WIDTH,HEIGHT+28)),
+               policy.crop((2*WIDTH,28,3*WIDTH,HEIGHT+28))]
+        for j,cell in enumerate(cells):sheet.paste(cell.resize((320,240),Image.Resampling.LANCZOS),(j*320,y+30))
+    sheet.save(root/'recommended_review.jpg',quality=95)
+    measured=selected[0]['overview_measurements'][profile]
+    calibration=dict(status='proposed; awaiting final human approval',overview_profile=profile,
+        overview_eye_world_m=eye,overview_target_world_m=target,
+        overview_quaternion_ros_wxyz=measured['quaternion_ros_wxyz'],
+        resolution=[WIDTH,HEIGHT],fps=20,focal_length_mm=12.,horizontal_aperture_mm=20.955,
+        clipping_range_m=[.01,10.],intrinsic=measured['intrinsic'],
+        wrist_position_gripper_m=WRIST_POSITION.tolist(),wrist_quaternion_ros_wxyz=list(WRIST_QUAT),
+        selected_ticks={r['phase']:r['physics_step'] for r in selected})
+    frozen_fields={k:v for k,v in calibration.items() if k not in ('status','selected_ticks')}
+    calibration['calibration_sha256']=hashlib.sha256(json.dumps(frozen_fields,sort_keys=True).encode()).hexdigest()
+    (root/'proposed_calibration.json').write_text(json.dumps(calibration,indent=2))
+
+
+if __name__=='__main__':
+    import argparse
+    parser=argparse.ArgumentParser(description='Rebuild camera review figures from saved diagnostic RGB; never simulate or collect.')
+    parser.add_argument('--build-review',type=Path,required=True)
+    parser.add_argument('--recommend',choices=tuple(OVERVIEW_PROFILES))
+    args=parser.parse_args()
+    build_overview_review(args.build_review)
+    if args.recommend:build_recommended_review(args.build_review,args.recommend)
