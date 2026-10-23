@@ -4,7 +4,9 @@ Updated 2026-10-23. Verify local files and current Git state before acting.
 **Current learning gate:** `feat/il-camera-dataset-v2`. Approved cameras frozen.
 The user authorized only the 12-attempt pilot: all 12 have now completed physically
 and passed automated QA; 3 selected physical action replays also passed. Stop for
-human review. No further collection, augmentation, training or remote push.
+human review. No further collection, augmentation or training. The user separately
+authorized publishing source/docs on this feature branch for GitHub review on
+2026-10-23; `main` and local datasets/weights/generated outputs remain untouched.
 Protocol remains provisional, not frozen. See `docs/PILOT_RESULTS.md` and the final
 dated section below for current evidence and exact local artifact paths.
 The older branch/state paragraph below is historical deterministic-reference evidence.
@@ -2309,3 +2311,27 @@ checkpoint files. All control/scene/camera/protocol source files are byte-identi
 to877f9b1. Six focused protocol tests passed again in2.423s after final reporting
 cleanup; python compile and git diff --check passed. Only reporting code and docs
 changed after the physics runs. A new local milestone commit follows; no push.
+
+## 2026-10-23 — Source and documentation publication for review
+
+The user subsequently requested that all completed documentation and work be
+pushed to the feature branch for review. This authorizes a normal, non-force push
+of `feat/il-camera-dataset-v2`, including pilot milestone `6638a1f` and its preceding
+camera/protocol/pipeline commits. It does not authorize final collection,
+augmentation, training, merging, changes to `main`, or artifact uploads.
+
+Preflight: clean working tree at `6638a1f`; terminal HTTPS authentication works.
+`git ls-remote --heads origin main feat/il-camera-dataset-v2 feat/fingertip-geometry-calibration`
+returned `main` at `c01651938f6220a23cb19ce3734670376e3eead5`, the prior feature branch
+at `f47c358ed3a7a75215633f0ee558150143b98a14`, and no existing camera/dataset branch.
+The new history contains no tracked datasets, outputs, checkpoints, logs or secret
+files; the largest added blob is the 173,884-byte licensed wrist-camera mount STL.
+README, pilot results and current gate text now distinguish publication permission
+from the still-pending learning approvals and explain that local artifact links
+will not work in a GitHub-only checkout.
+
+Publication command: `git push -u origin feat/il-camera-dataset-v2`.
+Verify its remote tip against `git rev-parse HEAD` using
+`git ls-remote origin refs/heads/feat/il-camera-dataset-v2`; also recheck `main`
+and `git status --short`. This publication update changes documentation only;
+the physical runs and tests recorded above remain the measured validation.

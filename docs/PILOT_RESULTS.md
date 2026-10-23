@@ -79,7 +79,7 @@ Retain the tested primary support: **x [−0.350,−0.330] m, y [−0.052,−0.0
 
 After human data-quality acceptance and separate authorization, proceed with the proposed **100 train /20 validation** attempt manifests and fixed held-out evaluation set. Use nested smaller training subsets later if desired, retaining source-case splits. Do not jump to 500/1,000 until the first data/training/evaluation cycle demonstrates useful learning. The measured costs justify profiling lossless image writing and rendering before large scale; any optimization must preserve decoded RGB, synchronization and the controller. No optimization, augmentation or training was performed in this pilot.
 
-**Stop here for user review.** All 12 pilot attempts are consumed. No final collection, dataset augmentation, conversion into an accepted training corpus, optimizer updates or remote push is authorized.
+**Stop here for user review.** All 12 pilot attempts are consumed. No final collection, dataset augmentation, conversion into an accepted training corpus or optimizer updates are authorized. The user separately authorized publishing source and documentation on `feat/il-camera-dataset-v2` for GitHub review on 2026-10-23. The raw recordings and generated review media/reports remain local and ignored by Git; this tracked document contains the measured results for remote review.
 
 ## Reproduce the report without collecting
 

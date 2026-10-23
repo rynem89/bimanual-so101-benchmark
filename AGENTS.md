@@ -28,7 +28,7 @@ Read `README.md` (if present) and `docs/ROBOTICS_CODEX_HANDOFF.md` at the start 
 - Demonstrations must pass visual/data-quality review and independent task evaluation before training.
 - Camera inspection snapshots under outputs/ are diagnostics, not training demonstrations.
 - Preserve failed-generation counts; never narrow distributions silently.
-- Camera arrangement approved 2026-10-23: freeze `configs/policy_cameras.json`. The authorized 12-attempt pilot is complete (12 physical successes, 12 automatic QA passes; 3 selected physical replay passes). Stop for human review; protocol remains provisional. No further collection, augmentation, training, or remote push until separately authorized. Read `docs/PILOT_RESULTS.md` and the handoff.
+- Camera arrangement approved 2026-10-23: freeze `configs/policy_cameras.json`. The authorized 12-attempt pilot is complete (12 physical successes, 12 automatic QA passes; 3 selected physical replay passes). Stop for human review; protocol remains provisional. No further collection, augmentation or training until separately authorized. The user separately authorized a normal push of source/docs on `feat/il-camera-dataset-v2` for review on 2026-10-23; preserve `main` and keep datasets/weights/generated outputs local. Read `docs/PILOT_RESULTS.md` and the handoff.
 
 ## Current order of work
 1. Geometry/TCP: independently verify actual opposing finger surfaces, real aperture for 40-mm cube, jaw angles and TCP transform (the CSV collision bounds currently missing). Treat mesh AABBs as proxies only; don't certify physical contact from AABB.

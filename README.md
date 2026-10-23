@@ -33,8 +33,14 @@ authorization. Research and procedure remain in
 [the protocol](docs/DEMONSTRATION_PROTOCOL.md), with machine-readable settings in
 [configs/demonstration_protocol.json](configs/demonstration_protocol.json).
 
-Work is local on `feat/il-camera-dataset-v2`. Main and GitHub are untouched;
-remote push is not authorized for this assignment. Preserved expert reference:
+Use the [GitHub review branch `feat/il-camera-dataset-v2`](https://github.com/rynem89/bimanual-so101-benchmark/tree/feat/il-camera-dataset-v2)
+for source code, configurations, tests and documentation. The user separately
+authorized publishing this feature branch for review on 2026-10-23; `main` remains
+unchanged. Raw recordings, generated reports/videos and checkpoints stay local
+and are excluded from Git. Links into `outputs/` therefore require this local
+workspace; GitHub reviewers should start with [the tracked pilot results](docs/PILOT_RESULTS.md)
+and [the demonstration protocol](docs/DEMONSTRATION_PROTOCOL.md).
+Preserved expert reference:
 `reference/pre-il-camera-v2` (`f47c358`); original reviewed camera baseline:
 `reference/camera-v2-reviewed` (`adf03b4`).
 
@@ -275,7 +281,8 @@ Human image/motion acceptance is pending. Sampled cube-colour ROI checks are
 visibility proxies, not certified segmentation or contact evidence. Cameras and
 protocol settings stay unchanged; broader-distribution reliability, accepted final
 training data and learned-policy success remain unproven. `checkpoints/` is empty.
-No final collection, augmentation, training or remote push was performed.
+No final collection, augmentation or training was performed. Publishing the
+source and documentation for review does not authorize those next steps.
 
 ## What each file does
 
