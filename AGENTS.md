@@ -28,7 +28,7 @@ Read `README.md` (if present) and `docs/ROBOTICS_CODEX_HANDOFF.md` at the start 
 - Demonstrations must pass visual/data-quality review and independent task evaluation before training.
 - Camera inspection snapshots under outputs/ are diagnostics, not training demonstrations.
 - Preserve failed-generation counts; never narrow distributions silently.
-- Current camera-v2 assignment: stop for human camera approval; no dataset collection, training, or remote push.
+- Camera arrangement approved 2026-10-23: freeze `configs/policy_cameras.json`. Current assignment: prepare/review the demonstration protocol and generation/QA pipeline. No demonstration collection, training, or remote push until separately authorized.
 
 ## Current order of work
 1. Geometry/TCP: independently verify actual opposing finger surfaces, real aperture for 40-mm cube, jaw angles and TCP transform (the CSV collision bounds currently missing). Treat mesh AABBs as proxies only; don't certify physical contact from AABB.

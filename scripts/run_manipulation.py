@@ -40,7 +40,7 @@ parser.add_argument('--cases-file',type=Path,help='Explicit named cube cases and
 parser.add_argument('--split',choices=('train','validation','heldout'),default='train')
 parser.add_argument('--policy-socket',type=Path,help='20 Hz learned policy in the isolated Python 3.12 environment')
 parser.add_argument('--diagnostic-front',action='store_true',help='Extra fixed front preview only; excluded from policy observations')
-parser.add_argument('--overview-profile',choices=('baseline','centered','angled_front','angled_rear','angled_left'),default='baseline')
+parser.add_argument('--overview-profile',choices=('baseline','centered','angled_front','angled_rear','angled_left'),default='centered')
 parser.add_argument('--compare-overviews',action='store_true',help='Same-tick diagnostic overview comparison and continuous policy camera video')
 parser.add_argument('--camera-preview',type=Path,help='Save policy camera phase snapshots; never demonstrations')
 parser.add_argument('--authorize-recording',action='store_true',help='Use only after explicit camera approval and collection authorization')
@@ -254,7 +254,11 @@ class Episode:
                 self.held_action=action.copy()
                 if self.camera_audit:self.camera_audit.capture(self.env,self.phase)
                 if self.writer:
-                    self.writer.begin(self.env.frame,self.env.capture_images(),self.held_action)
+                    images=self.env.capture_images()
+                    capture=dict(phase=self.phase,physics_step=self.env.total_steps,
+                        sensor_frame_ids={name:int(camera.frame[0]) for name,camera in self.env.cameras.items()},
+                        cameras=self.env.camera_metadata())  # Checks measured wrist attachments at every boundary.
+                    self.writer.begin(self.env.frame,images,self.held_action,capture=capture)
             if self.held_action is None:raise RuntimeError('Expert policy clock must start after reset')
             action=self.held_action
         before=self.env.total_steps
@@ -357,6 +361,9 @@ class Episode:
         return self.check_fk(side)
 
     def reset(self):
+        from policy_cameras import CALIBRATION_PATH, CALIBRATION_SHA256
+        if hashlib.sha256(CALIBRATION_PATH.read_bytes()).hexdigest()!=CALIBRATION_SHA256:
+            raise RuntimeError('Frozen camera file changed during run; restart and review')
         for name,expected in self.source_sha256.items():
             if hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()!=expected:
                 raise RuntimeError('Source changed during this run; restart before reset: '+name)
@@ -393,11 +400,16 @@ class Episode:
         if self.camera_audit:self.camera_audit.capture(self.env,'initial',force=True)
         if options.record_dir and options.stage!='model':
             from dataset_io import EpisodeWriter
+            from policy_cameras import CALIBRATION_SHA256, CALIBRATION_PATH
+            cases_metadata=json.loads(options.cases_file.read_text()) if options.cases_file else {}
             root=options.record_dir/f'{self.case}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")}'
             self.writer=EpisodeWriter(root,dict(case=self.case,configuration=EVALUATION_CASES[self.case],
                 cameras=self.env.camera_metadata(),image_shape=[480,640,3],motion_mode=options.motion_mode,split=self.split,
                 source_revision=self.source_revision,tracked_source_dirty=self.source_dirty,
-                source_sha256=self.source_sha256,
+                source_sha256=self.source_sha256,camera_config_sha256=CALIBRATION_SHA256,
+                camera_config_path=str(CALIBRATION_PATH),overview_profile=options.overview_profile,
+                protocol_sha256=cases_metadata.get('protocol_sha256'),
+                manifest_sha256=hashlib.sha256(options.cases_file.read_bytes()).hexdigest() if options.cases_file else None,
                 physics_hz=60,expert_command_hz=20,controller='privileged geometric expert',
                 grip_feedback_from_lift=options.grip_feedback_from_lift,joint_limits_rad=self.model.limits.tolist()))
             result['recording_dir']=str(root)

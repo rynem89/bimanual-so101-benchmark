@@ -26,6 +26,15 @@ from dataset_io import JOINT_ORDER, TASK, validate_episode
 def convert(args):
     from PIL import Image
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from demonstration_pipeline import episode_digest, CALIBRATION_SHA256
+    quality=json.loads(args.quality_report.read_text())
+    if (not quality.get('ready_for_conversion') or quality.get('camera_config_sha256')!=CALIBRATION_SHA256
+        or quality.get('raw_root')!=str(args.raw.resolve())):
+        raise ValueError('Require complete automatic + human acceptance for this exact raw root and frozen cameras')
+    approved={row['path']:row for row in quality['episodes'] if row['accepted']}
+    reviewed_paths={row['path'] for row in quality['episodes'] if 'path' in row}
+    if {str(root.resolve()) for root in args.raw.iterdir() if root.is_dir()}!=reviewed_paths:
+        raise ValueError('Raw attempt inventory changed after QA; validate again')
     attempts=[];accepted=[]
     for root in sorted(args.raw.iterdir()):
         if root.is_dir() and not (root/'episode.json').exists():
@@ -33,8 +42,12 @@ def convert(args):
     for path in sorted(args.raw.glob('*/episode.json')):
         meta=json.loads(path.read_text());attempts.append(dict(path=str(path.parent),success=meta['success'],case=meta['case'],
             failure=meta.get('evaluation',{}).get('failure'),source_revision=meta.get('source_revision')))
-        if meta['success']:
+        if str(path.parent.resolve()) in approved:
+            proof=approved[str(path.parent.resolve())]
+            if not proof['automatic_pass'] or episode_digest(path.parent)!=proof['digest']:
+                raise ValueError('Raw bytes changed after human/automatic acceptance')
             validate_episode(path.parent);accepted.append((path.parent,meta))
+    if len(accepted)!=len(approved):raise ValueError('Accepted episode missing from raw root')
     if not accepted:raise RuntimeError('No physically successful demonstrations')
     splits={meta.get('split','diagnostic_legacy') for _,meta in accepted}
     if len(splits)!=1:raise ValueError('Do not mix training/validation/evaluation partitions')
@@ -63,14 +76,17 @@ def convert(args):
                 raw_schema=meta['schema'],tracked_source_dirty=meta.get('tracked_source_dirty'),
                 raw_sha256=hashlib.sha256((root/'trajectory.npz').read_bytes()).hexdigest()))
     finally:dataset.finalize()
-    manifest=dict(schema='so101-lerobot-conversion-1.0',lerobot='0.6.1',attempts=attempts,
+    manifest=dict(schema='so101-lerobot-conversion-1.1',lerobot='0.6.1',attempts=attempts,
+        accepted_quality_report=quality,quality_report_sha256=hashlib.sha256(args.quality_report.read_bytes()).hexdigest(),
         accepted_episodes=provenance,cameras=accepted[0][1]['cameras'],privileged_in_training=False,
         frames=dataset.num_frames,episodes=dataset.num_episodes)
     manifest['split']=next(iter(splits))
-    manifest['quality_report']=dict(attempted=len(attempts),accepted=len(accepted),
+    manifest['quality_report']=dict(attempted=quality['declared_attempts'],accepted=len(accepted),
+        raw_attempt_directories=len(attempts),recorded_process_starts=quality['recorded_attempts'],
+        rejected_or_missing=quality['declared_attempts']-len(accepted),
         completed_failures=sum(not row['success'] and row.get('status')!='incomplete' for row in attempts),
         incomplete=sum(row.get('status')=='incomplete' for row in attempts),
-        raw_contract_validated=True,visual_quality='Requires human review; nonblank RGB is not visibility evidence')
+        raw_contract_validated=True,visual_quality='Human acceptance bound to all raw episode bytes; see accepted_quality_report')
     (args.output/'conversion.json').write_text(json.dumps(manifest,indent=2))
     # Reader verification catches unflushed parquet/schema errors independently.
     loaded=LeRobotDataset('local/so101',root=args.output,video_backend='pyav')
@@ -187,6 +203,7 @@ def serve(args):
 def main():
     parser=argparse.ArgumentParser(description=__doc__);commands=parser.add_subparsers(dest='command',required=True)
     p=commands.add_parser('convert');p.add_argument('--raw',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--quality-report',type=Path,required=True,help='Accepted automatic + human demonstration QA report')
     p.set_defaults(function=convert)
     p=commands.add_parser('prepare-training',help='Print official training command only; never execute updates')
     p.add_argument('--dataset',type=Path,required=True);p.add_argument('--output',type=Path,required=True)

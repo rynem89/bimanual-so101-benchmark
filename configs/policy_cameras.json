@@ -1,0 +1,22 @@
+{
+  "version": "so101-cameras-3.0",
+  "approved_by": "user visual review, 2026-10-23",
+  "reviewed_source_revision": "2aa6961",
+  "reviewed_proposal_sha256": "36b7a6f81433eb927ee69e0e3a42057fc74ec359da14fa00d7919f440fce0592",
+  "overview_profile": "centered",
+  "overview_eye_world_m": [0.0, -0.20, 0.78],
+  "overview_target_world_m": [0.0, -0.20, 0.02],
+  "overview_quaternion_ros_wxyz": [0.0, 1.0, 0.0, 0.0],
+  "wrist_parent": "gripper (rigid wrist-roll housing, not moving jaw)",
+  "wrist_position_parent_m": [0.0141, -0.045, 0.005],
+  "wrist_target_parent_m": [0.0141, 0.0, -0.09],
+  "wrist_quaternion_ros_wxyz": [0.0, 0.0, 0.9756376988650908, 0.21938796811409378],
+  "resolution_wh": [640, 480],
+  "fps": 20,
+  "focal_length_mm": 12.0,
+  "horizontal_aperture_mm": 20.955,
+  "clipping_range_m": [0.01, 10.0],
+  "intrinsic_expected": [[366.4996338, 0.0, 320.0], [0.0, 366.4996338, 240.0], [0.0, 0.0, 1.0]],
+  "coordinate_convention": "ROS optical +X right, +Y down, +Z forward; quaternion wxyz",
+  "physical_calibration": "Simulation estimate; measure physical lenses, mounts and gantry before sim-to-real"
+}

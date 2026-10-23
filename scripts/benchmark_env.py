@@ -18,11 +18,11 @@ from benchmark_core import Frame, TaskEvaluator, TaskSpec
 
 from policy_cameras import NAMES, HEIGHT, WIDTH, WRIST_POSITION, WRIST_ROTATION, configure_cameras, check_attachment, OVERVIEW_PROFILES
 
-CAMERA_VIEWS = {'overview': OVERVIEW_PROFILES['baseline']}
+CAMERA_VIEWS = {'overview': OVERVIEW_PROFILES['centered']}
 
 
 class BenchmarkEnv:
-    def __init__(self, sim, scene, model, layout, overview_profile: str="baseline"):
+    def __init__(self, sim, scene, model, layout, overview_profile: str="centered"):
         self.sim, self.scene, self.model, self.layout = sim, scene, model, layout
         self.overview_view=OVERVIEW_PROFILES[overview_profile]
         self.arms = [scene['left_arm'], scene['right_arm']]
@@ -139,6 +139,9 @@ class BenchmarkEnv:
                 quaternion_ros_wxyz=quat.tolist(),intrinsic=intrinsic.tolist(),resolution=[WIDTH,HEIGHT],fps=20,
                 channels='RGB uint8',parent='world' if name=='overview' else name.split('_')[0]+'/gripper',
                 calibration_status='initial simulation estimate, not hardware measured')
+            if name!='overview' and self.frame is not None:
+                result[name]['parent_position_world_m']=state[:3].tolist()
+                result[name]['parent_rotation_world']=parent_rotation.tolist()
         if self.cameras and set(result)!=set(NAMES):raise RuntimeError('Missing policy cameras')
         return result
 

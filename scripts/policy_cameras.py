@@ -4,25 +4,30 @@ Initial simulation extrinsics, not measured hardware calibration. Optical axes
 use ROS: +X right, +Y down, +Z forward. Distances are metres.
 """
 from pathlib import Path
+import hashlib
 import json
 import numpy as np
-from scipy.spatial.transform import Rotation
 from PIL import Image, ImageDraw
 
 NAMES = ('overview', 'left_wrist', 'right_wrist')
-HEIGHT, WIDTH = 480, 640
+CALIBRATION_PATH = Path(__file__).resolve().parents[1]/'configs/policy_cameras.json'
+CALIBRATION_BYTES = CALIBRATION_PATH.read_bytes()
+CALIBRATION = json.loads(CALIBRATION_BYTES)
+CALIBRATION_SHA256 = hashlib.sha256(CALIBRATION_BYTES).hexdigest()
+WIDTH, HEIGHT = CALIBRATION['resolution_wh']
+APPROVED_PROFILE = CALIBRATION['overview_profile']
 # Candidate poses are fixed in world metres for an entire run. Wrist geometry
 # and intrinsics stay identical across this overview-only comparison.
 OVERVIEW_PROFILES = {
     'baseline': ((0., -.10, .72), (0., -.10, .02)),
-    'centered': ((0., -.20, .78), (0., -.20, .02)),
+    'centered': (tuple(CALIBRATION['overview_eye_world_m']), tuple(CALIBRATION['overview_target_world_m'])),
     'angled_front': ((0., .07, .78), (0., -.18, .02)),
     'angled_rear': ((0., -.45, .78), (0., -.18, .02)),
     'angled_left': ((-.25, -.18, .78), (0., -.18, .02)),
 }
 # Wrist roll housing is the rigid gripper link, not the articulated moving jaw.
-WRIST_POSITION = np.array([0.0141, -0.045, 0.005])
-WRIST_TARGET = np.array([0.0141, 0., -0.09])
+WRIST_POSITION = np.array(CALIBRATION['wrist_position_parent_m'])
+WRIST_TARGET = np.array(CALIBRATION['wrist_target_parent_m'])
 
 
 def optical_rotation(position: np.ndarray, target: np.ndarray) -> np.ndarray:
@@ -33,7 +38,22 @@ def optical_rotation(position: np.ndarray, target: np.ndarray) -> np.ndarray:
 
 
 WRIST_ROTATION = optical_rotation(WRIST_POSITION, WRIST_TARGET)
-WRIST_QUAT = tuple(Rotation.from_matrix(WRIST_ROTATION).as_quat()[[3,0,1,2]])
+WRIST_QUAT = tuple(CALIBRATION['wrist_quaternion_ros_wxyz'])
+
+
+def quaternion_rotation(quaternion) -> np.ndarray:
+    """Unit wxyz quaternion to rotation, without a simulation-only SciPy dependency."""
+    q=np.asarray(quaternion,dtype=float)
+    if q.shape!=(4,) or not np.isfinite(q).all() or abs(np.linalg.norm(q)-1)>1e-5:
+        raise ValueError('Invalid unit optical quaternion')
+    w,x,y,z=q/np.linalg.norm(q)
+    return np.array([[1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w)],
+                     [2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w)],
+                     [2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)]])
+
+
+if not np.allclose(quaternion_rotation(WRIST_QUAT),WRIST_ROTATION,atol=1e-12,rtol=0):
+    raise ValueError('Frozen wrist optical target and orientation disagree')
 
 
 def configure_cameras(scene_cfg, diagnostic_front: bool=False, compare_overviews: bool=False):
@@ -57,8 +77,9 @@ def configure_cameras(scene_cfg, diagnostic_front: bool=False, compare_overviews
             class_type=ArticulatedCamera, prim_path='{ENV_REGEX_NS}/'+parent+name, offset=offset,
             update_period=0., height=HEIGHT, width=WIDTH, data_types=['rgb'],
             update_latest_camera_pose=True,
-            spawn=PinholeCameraCfg(focal_length=12., horizontal_aperture=20.955,
-                                  clipping_range=(.01, 10.))))
+            spawn=PinholeCameraCfg(focal_length=CALIBRATION['focal_length_mm'],
+                                  horizontal_aperture=CALIBRATION['horizontal_aperture_mm'],
+                                  clipping_range=tuple(CALIBRATION['clipping_range_m']))))
 
     if compare_overviews:
         # Diagnostic-only sensors never enter NAMES or the policy observation.
@@ -210,7 +231,7 @@ def overview_measurement(rgb: np.ndarray, camera, frame) -> dict:
     pose=frame.cube_pose()
     corners=np.array(list(product((-.02,.02),repeat=3)))@pose[:3,:3].T+pose[:3,3]
     q=camera.data.quat_w_ros[0].cpu().numpy()
-    rotation=Rotation.from_quat(q[[1,2,3,0]]).as_matrix()
+    rotation=quaternion_rotation(q)
     local=(corners-camera.data.pos_w[0].cpu().numpy())@rotation
     k=camera.data.intrinsic_matrices[0].cpu().numpy()
     pixels=local@k.T;pixels=pixels[:,:2]/pixels[:,2,None]

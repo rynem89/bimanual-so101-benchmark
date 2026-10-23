@@ -1,5 +1,11 @@
 # Project handoff — Simulation-first bimanual SO-101
-Updated 2026-10-22. Verify local files and current Git state before acting.
+Updated 2026-10-23. Verify local files and current Git state before acting.
+
+**Current learning gate:** `feat/il-camera-dataset-v2`. Centered overhead and both
+wrist cameras approved and frozen; demonstration protocol proposed, not approved.
+No collection, training or remote push authorized. See the final dated section
+“Camera freeze and demonstration protocol pipeline” for current commands/results.
+The older branch/state paragraph below is historical deterministic-reference evidence.
 
 **Latest maintained state:** branch `feat/fingertip-geometry-calibration`;
 geometry/TCP, approach, pickup, transport, handover and basket placement/retreat
@@ -2038,3 +2044,125 @@ and checkpoint directories remain empty. Camera approval and demonstration-strat
 approval are separate gates. No dependencies, assets, driver or system settings
 changed, and no remote push was performed. Further camera work pauses at the
 consolidated human review.
+
+## 2026-10-23 — Camera freeze and demonstration protocol pipeline
+
+User approved centered overhead plus both unchanged wrist sensors. No further
+camera optimization. User requested a substantial research-backed demonstration
+protocol and complete generation/QA tooling before authorizing any dataset or
+training. **No collection, training, or remote push in this session.** Datasets
+and checkpoint roots remain empty. Temporary synthetic format fixtures live only
+under `/tmp/so101_protocol_format_iy7klat1`, not in either artifact root.
+
+Current branch `feat/il-camera-dataset-v2`, started clean at `2aa6961`. New local
+milestone commit is discoverable with `git log -1`; no push. Preserve both existing
+reference tags; main and remote unchanged. README is now the run procedure and
+complete maintained-file inventory. Research/choices/counts/ranges/budgets/gates
+are in `docs/DEMONSTRATION_PROTOCOL.md`; do not confuse proposed settings with
+executed experiments.
+
+### Frozen environment/camera record
+
+Stack unchanged: leisaac-sim Python3.11.16/NumPy1.26/torch2.7.0+cu128,
+Sim5.1/Lab2.3/LeIsaac0.4. Isolated so101-il-py312 has Python3.12.15,
+LeRobot0.6.1/NumPy2.2.6/torch2.7.1+cu128. No install/upgrade/driver/OS changes.
+
+Approved source is `configs/policy_cameras.json`, version so101-cameras-3.0,
+SHA256 `f8f7e56842602fbe040fea43b1cf1a51f75f56b3ad28357aae04f717c8e9fcbc`.
+640x480 RGB at20Hz; focal12mm, aperture20.955mm, clips0.01..10m,
+K=[[366.4996338,0,320],[0,366.4996338,240],[0,0,1]]. Overview eye(0,-.20,.78)m,
+target(0,-.20,.02)m, ROS wxyz(0,1,0,0). Both wrists attach to rigid gripper link,
+position(.0141,-.045,.005)m, aim at(.0141,0,-.09)m, ROS wxyz
+(0,0,.9756376988650908,.21938796811409378). Not measured physical calibration.
+Original proposal hash36b7a6f... is a different JSON structure, preserved as
+provenance, not the new file hash. Centered is now default; historical profiles
+remain diagnostic only. User approval did not authorize demonstrations.
+
+### Implementation and evidence boundary
+
+- `demonstration_pipeline.py`: deterministic protocol manifests, offline pilot
+  preflight, dry-run/guarded existing-expert launches, start/finish ledger, resume
+  without retries, exhaustive QA, review sheets/video/template, hash-bound human
+  acceptance. Pilot12/train100/validation20/heldout100/stress20 are attempted counts.
+- `demonstration_protocol.json`: proposed distribution and QA/training conditions;
+  SHA256 `9ec7c3539c287e11bdc988eb52597a16001404d81ef43f8aad64fd0c6a4a3b3a`.
+  Protocol approval and per-session collection authorization still required.
+- Recorder instrumentation saves phase, actual frame IDs, measured camera and
+  parent transforms at each policy boundary. Dataset validation also checks
+  float32 state/actions and absolute physics time. No policy feature gains oracle
+  information. Conversion requires accepted QA and unchanged raw bytes/inventory;
+  failed/missing process attempts stay in the declared denominator.
+- `so101_model.py`, `so101_planning.py`, `benchmark_core.py`, scene module remain
+  byte-identical to2aa6961. BenchmarkEnv.advance/step/reset/_read and expert
+  move/move_right AST unchanged. Episode.run differs only in recording metadata;
+  Episode.step adds capture evidence; Episode.reset adds camera-file hash guard.
+  No motion, contact, actuator, gain or task evaluation change was made.
+- Quaternion-to-matrix camera helper uses NumPy so QA/conversion work in both
+  locked environments. Frozen wrist quaternion is checked against its optical
+  target. Sim camera adapter remains project-owned and sensor-only.
+
+### Executed commands and actual results
+
+All simulation commands source conda.sh, activate leisaac-sim, set assets root,
+OPENBLAS_NUM_THREADS=1 and OMP_NUM_THREADS=1. Official-reader commands activate the
+existing so101-il-py312 instead. No optimizer/model construction in these tests.
+
+1. `python scripts/demonstration_pipeline.py plan --output outputs/demonstration_protocol_v1`:
+   fixed manifest/hash plan written. `collect` without --execute printed12 proposed
+   launches; no simulator or recording from that command. Earlier pre-final
+   manifests in outputs/demonstration_proposal_v1 are stale after the final protocol
+   observation-history setting was added; use demonstration_protocol_v1.
+2. Bundled USD library setup as in protocol, then
+   `python scripts/demonstration_pipeline.py preflight --manifest outputs/demonstration_protocol_v1/pilot.json --output outputs/demonstration_protocol_v1/pilot_preflight.json`:
+   **12/12 HOME/open/pregrasp/grasp geometry plans safe**, summed137.770959s.
+   No physical contacts, lift, handover, bin or RGB task observability proved.
+3. With bundled USD PYTHONPATH/LD_LIBRARY_PATH:
+   `python -m unittest discover -s tests -v`:
+   **45/45 passed in71.810s**, log outputs/demonstration_proposal_v1/milestone_tests.log.
+   Six new protocol tests include mocked collector failure/resume (no real child
+   simulator), fixed/tampered manifests, corruption outside sparse image samples,
+   stale sensor clocks, wrong wrist parent, physics failure, production length gate,
+   human acceptance hashes, missing ledger and mixed sources. Existing collision
+   equivalence still checked2177 LP queries/4215 path samples. Earlier full44-test
+   passes (71.511s,72.708s) precede the last added collector test.
+4. `python scripts/run_manipulation.py --cpu-threads 8 --stage model --headless --exit-after --camera-preview outputs/approved_camera_freeze_model_retry --output-dir outputs/controller/approved_camera_freeze_model_retry`:
+   **passed_requested_stage**, default centered profile,9.046423s wall. Approved K,
+   overview extrinsics and actual measured-parent poses rechecked from audit.json.
+   One reset/interface sample only; no action-labelled demonstration or complete
+   manipulation episode. GUI defaults remain unchanged for user commands.
+5. Two synthetic8-frame episodes created with test fixtures and synthetic review
+   flags solely under /tmp. In so101-il-py312:
+   `python scripts/policy_pipeline.py convert --raw /tmp/so101_protocol_format_iy7klat1/raw --output /tmp/so101_protocol_format_iy7klat1/lerobot_final --quality-report /tmp/so101_protocol_format_iy7klat1/qa_accepted/quality.json`:
+   **2 episodes/16 frames, official v3.0** reopened successfully. Official ACT and
+   Diffusion config/sequence readers tested indices0/7/8/15, actions[64,12], all
+   three CHW[3,480,640] images, finite values,63 padded future targets at episode
+   end; no cross-episode windows. ACT state[24], Diffusion history state[1,24].
+   Logs: format_conversion_final.log, official_sequence_reader_retry.log in
+   outputs/demonstration_proposal_v1. Synthetic flags do not prove physics success.
+6. Rejection tests: adding an unreviewed raw directory or changing accepted raw
+   bytes each caused conversion to fail BEFORE destination creation. File was
+   removed only because it was a known temporary synthetic fault injected by this
+   test. Log conversion_gate_tests.log. `prepare-training` on the synthetic
+   converted root printed an official100k command only; its named NEVER_EXECUTED
+   output directory does not exist. No model/optimizer/checkpoint created.
+
+Initial failures were diagnosed rather than hidden: converter import initially
+pulled SciPy from camera code, unavailable in the training lock. Removed that
+cross-environment dependency using a checked NumPy quaternion helper; no install.
+Standalone reader initially tried read-only ~/.cache: reran with HF_HOME and
+HF_DATASETS_CACHE under ignored outputs/huggingface. First simulator command in
+sandbox had no CUDA access; identical reset diagnostic with GPU permission passed.
+Logs of these failures are retained. No changed physics was used to obtain a pass.
+
+### Next action and research limitations
+
+Review README and DEMONSTRATION_PROTOCOL. Approve/revise the protocol, then
+separately authorize a12-attempt pilot. Exact final/train session authorization
+and accepted pilot needed before scaling; never fabricate a true approval JSON.
+No final dataset or training yet. The new recorder's complete action-labelled
+physical run remains untested until that authorization. Varied full-task success,
+real PNG throughput/storage, human pilot visibility and learned performance remain
+unproven. A future separate-root offline policy-loss CLI is explicitly not yet
+implemented; proposed primary uses fixed100k final checkpoint and independent
+physical validation. Internal LeRobot eval_split is disabled in that proposal to
+avoid mixing root statistics with separate validation data. No VLA chosen/downloaded.

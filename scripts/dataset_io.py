@@ -36,6 +36,10 @@ def validate_episode(root):
             raise ValueError('Invalid episode state/action shapes')
         if not all(np.isfinite(data[k]).all() for k in ('state','action','time_s')):
             raise ValueError('Nonfinite trajectory')
+        if data['state'].dtype!=np.float32 or data['action'].dtype!=np.float32:
+            raise ValueError('State/action must use float32 radians')
+        if not np.allclose(data['time_s'],steps/60,atol=1e-6,rtol=0):
+            raise ValueError('Absolute physics timestamps disagree')
         bounded='joint_limits_rad' in meta
         if meta['schema']==SCHEMA and not bounded:raise ValueError('Missing authored action bounds')
         if bounded:
@@ -78,7 +82,7 @@ class EpisodeWriter:
         if self.rows:
             np.savez(self.root/'trajectory.partial.npz',**{k:np.array([r[k] for r in self.rows]) for k in self.rows[0]})
 
-    def begin(self,frame,images,action):
+    def begin(self,frame,images,action,capture=None):
         if self.pending is not None:raise RuntimeError('Previous policy transition is incomplete')
         if frame is None:raise RuntimeError('Reset before recording')
         if set(images)!=set(self.meta['cameras']):raise ValueError('Camera set changed')
@@ -92,6 +96,12 @@ class EpisodeWriter:
                           action=np.asarray(action,dtype=np.float32).reshape(12).copy(),time_s=frame.t_s,
                           physics_step=round(frame.t_s*60),image_step=[round(frame.t_s*60)]*len(images))
         self.actual=[]
+        if capture is not None:
+            if capture['physics_step']!=round(frame.t_s*60):
+                raise ValueError('Rendered camera and measured state clocks differ')
+            # Append-only timing/attachment evidence, excluded from policy features.
+            with (self.root/'captures.jsonl').open('a') as stream:
+                stream.write(json.dumps(dict(capture,index=index))+'\n')
         self.privileged.append(dict(physics_step=round(frame.t_s*60),cube=frame.cube.tolist(),
                                     pads_N=frame.pads.tolist(),environment_N=frame.environment.tolist()))
 
