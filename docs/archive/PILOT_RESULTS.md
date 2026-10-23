@@ -1,6 +1,11 @@
+> Historical record, moved out of the operating guides during final consolidation.
+> Statements below describe their recorded dates, not current permissions.
+> Start with [README](../../README.md). Historical source/configuration paths
+> are recoverable at commit `bbb15f5` and earlier history.
+
 # Physical 12-attempt pilot results — 2026-10-23
 
-This document is the measured pilot-results record; [STATUS](STATUS.md) holds current permissions and decisions. All expert attempts and three physical replay tests ran in the visible Isaac simulator on committed source `877f9b1`, with the pinned stack and approved cameras unchanged. No failed attempt was regenerated.
+This document is the measured pilot-results record; [STATUS](../../README.md#project-status) holds current permissions and decisions. All expert attempts and three physical replay tests ran in the visible Isaac simulator on committed source `877f9b1`, with the pinned stack and approved cameras unchanged. No failed attempt was regenerated.
 
 ## Verdict and review
 
@@ -79,7 +84,7 @@ Retain the tested primary support: **x [−0.350,−0.330] m, y [−0.052,−0.0
 
 After human data-quality acceptance and separate authorization, proceed with the proposed **100 train /20 validation** attempt manifests and fixed held-out evaluation set. Use nested smaller training subsets later if desired, retaining source-case splits. Do not jump to 500/1,000 until the first data/training/evaluation cycle demonstrates useful learning. The measured costs justify profiling lossless image writing and rendering before large scale; any optimization must preserve decoded RGB, synchronization and the controller. No optimization, augmentation or training was performed in this pilot.
 
-All 12 pilot attempts are consumed; human acceptance remains pending. [STATUS](STATUS.md) is the current approval authority. The raw recordings and generated review media/reports remain local and ignored by Git; this tracked document contains the measured results for remote review.
+All 12 pilot attempts are consumed; human acceptance remains pending. [STATUS](../../README.md#project-status) is the current approval authority. The raw recordings and generated review media/reports remain local and ignored by Git; this tracked document contains the measured results for remote review.
 
 ## Reproduce the report without collecting
 

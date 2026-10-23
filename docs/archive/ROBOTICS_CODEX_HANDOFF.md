@@ -1,10 +1,15 @@
+> Historical record, moved out of the operating guides during final consolidation.
+> Statements below describe their recorded dates, not current permissions.
+> Start with [README](../../README.md). Historical source/configuration paths
+> are recoverable at commit `bbb15f5` and earlier history.
+
 # Historical engineering archive
 
 > Preserved through the published `a5cdc18` baseline. This file is historical
 > evidence, not a current work order or operating guide. Earlier claims, commands,
 > branch names and permissions describe their dated context and may be obsolete.
-> Start with [README](../README.md), [current status](STATUS.md),
-> [getting started](GETTING_STARTED.md) and [the code map](ARCHITECTURE.md).
+> Start with [README](../../README.md), [current status](../../README.md#project-status),
+> [getting started](../SIMULATION.md#environment-locks) and [the code map](../ARCHITECTURE.md).
 > No historical instruction authorizes new collection, training, deletion or push.
 
 ---

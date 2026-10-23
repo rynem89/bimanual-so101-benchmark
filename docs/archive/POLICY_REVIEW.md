@@ -1,11 +1,16 @@
+> Historical record, moved out of the operating guides during final consolidation.
+> Statements below describe their recorded dates, not current permissions.
+> Start with [README](../../README.md). Historical source/configuration paths
+> are recoverable at commit `bbb15f5` and earlier history.
+
 # Historical review of the earlier failed learning experiments
 
 > Archive, not current training or inference instructions. Its saved models/data
 > were removed during the previously authorized reset. Names such as
 > `current_models` in the unchanged metadata snapshot mean current at that old
 > audit, not checkpoints available now. Preserve this record to understand the
-> earlier camera/data/method failures. Use [POLICIES](POLICIES.md) and
-> [STATUS](STATUS.md) for the current official pipeline and approval gates.
+> earlier camera/data/method failures. Use [POLICIES](../POLICIES.md) and
+> [STATUS](../../README.md#project-status) for the current official pipeline and approval gates.
 
 ---
 
@@ -20,7 +25,7 @@ collection is authorized until the new camera and demonstration gates pass.
 # ACT and Diffusion: implementation and training review
 
 This document explains the existing implementation and completed training runs.
-It does not prescribe them as an optimized method. Use the [README](../README.md)
+It does not prescribe them as an optimized method. Use the [README](../../README.md)
 for commands. The companion [metadata snapshot](POLICY_REVIEW_METADATA.json)
 contains exact saved configurations, arguments, statistics and provenance so a
 reviewer can inspect them on GitHub without access to this workstation.
@@ -81,7 +86,7 @@ recording report used one Kit worker; current GUI instructions use eight after a
 later startup stall. These are process-worker settings, not action frequencies.
 
 The reset configurations are the first four `train` cases in
-[configs/task_distribution.json](../configs/task_distribution.json). The manifest
+[configs/task_distribution.json](https://github.com/rynem89/bimanual-so101-benchmark/blob/bbb15f533c186537f81846ac3dc75c6a0a14484e/configs/task_distribution.json). The manifest
 contains 32 training, 8 validation and 30 held-out configurations with separate
 seeds. Its inward-v2 range is X ±10 mm, Y −12 to −4 mm and yaw ±6° relative to
 nominal `(-0.34, -0.04)` m. An earlier symmetric Y distribution exposed expert
@@ -139,7 +144,7 @@ python scripts/policy_pipeline.py train --method diffusion \
 ## Camera choice and image quality
 
 Camera definitions are `CAMERA_VIEWS` and `configure_cameras()` in
-[benchmark_env.py](../scripts/benchmark_env.py). The cameras are fixed at
+[benchmark_env.py](../../scripts/benchmark_env.py). The cameras are fixed at
 `{ENV_REGEX_NS}/overview` and `.../front`, not parented to any robot link.
 
 | Camera | Eye position, world metres | Look-at target, world metres |

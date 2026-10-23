@@ -1,7 +1,12 @@
+> Historical record, moved out of the operating guides during final consolidation.
+> Statements below describe their recorded dates, not current permissions.
+> Start with [README](../../README.md). Historical source/configuration paths
+> are recoverable at commit `bbb15f5` and earlier history.
+
 # Repository consolidation verification
 
 Date: 2026-10-23. Baseline `a5cdc18`; branch `feat/repository-consolidation`.
-[Current gates](STATUS.md) · [Original pilot results](PILOT_RESULTS.md)
+[Current gates](../../README.md#project-status) · [Original pilot results](PILOT_RESULTS.md)
 
 This is interface/documentation regression, not a new dataset or training run.
 Full evidence remains local in `outputs/repository_consolidation/`. No existing
@@ -27,7 +32,7 @@ updated from actual commands; pending items are not completion claims.
 ## Reproduce the cheap checks
 
 Activate `leisaac-sim`; run the CPU command in
-[getting started](GETTING_STARTED.md#cpu-tests). CLI help has no heavy imports:
+[getting started](../SIMULATION.md#environment-locks). CLI help has no heavy imports:
 
 ```bash
 python scripts/so101.py --help
@@ -218,3 +223,41 @@ The final audit of the 12 current guides passed: 132 local links/anchors resolve
 and all 49 tracked files are named in the architecture inventory. Runtime/config
 preservation and the absence of all 73 removed files were rechecked in
 `outputs/repository_consolidation/guides_cleanup_audit.json`.
+
+## Final documentation/source retirement preparation — 2026-10-23
+
+Continuation baseline: `bbb15f5`, same `feat/repository-consolidation` branch.
+The README now gives the ordered Setup → Scene → Expert IK → Demonstrations →
+ACT/Diffusion → Evaluation procedure. Four existing detailed guides contain the
+active explanations; six existing records were relocated into this archive.
+The four replaced active documents are temporary redirects pending the same
+approval as two unused probes and two superseded configs. No new guide was added.
+
+A temporary 41-file copy excluded all eight proposed removals. Its existing
+**10 CLI/authorization tests passed in 0.222 s**. This checks the actual proposed
+source/config tree without removing approval-gated originals. Static imports and
+literal command/config paths in maintained source/tests contain **zero references**
+to the four retired code/config paths. The full CPU suite and physical tasks were
+not rerun: every remaining source/test, active config, controller and physics file
+is byte-identical to the baseline. Prior physical and human-viewer evidence remains
+valid under that scope; no new physical success is claimed.
+
+The prepared final tree has 41 tracked files versus 49 before: 13 scripts versus
+15, four configs versus six, seven tests unchanged, four active detailed guides
+versus 11. Historical records are five Markdown files plus the byte-identical
+policy-review JSON in this directory. The eight removals and main/branch operations
+remain behind the single approval specified in the code map.
+
+All current/archive links and command examples were checked, including links that
+would otherwise point at removed guides. Pilot inventory remains 107,454 files /
+11,222,342,915 bytes with identical size/mtime fingerprint; original QA/report,
+attempt ledger and reference benchmark hashes match. Full raw byte digests were
+already verified in the prior cleanup and were not needlessly recomputed here.
+No collection, training, data/evidence deletion, dependency change or new branch.
+The previous 73-file cache cleanup is not repeated or counted again. No identical
+stationary PNG preview groups were found for further deletion.
+
+Final link/syntax pass: **140 local links/anchors**, including
+temporary redirects, **24 Bash blocks** and **27 CLI examples** passed.
+All 41 final files are named in the code map. The existing focused CLI result
+was reused after prose-only corrections; it was not rerun.

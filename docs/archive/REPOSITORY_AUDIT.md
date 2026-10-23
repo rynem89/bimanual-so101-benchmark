@@ -1,6 +1,11 @@
+> Historical record, moved out of the operating guides during final consolidation.
+> Statements below describe their recorded dates, not current permissions.
+> Start with [README](../../README.md). Historical source/configuration paths
+> are recoverable at commit `bbb15f5` and earlier history.
+
 # Repository audit and proposed cleanup
 
-Date: 2026-10-23. [Full file inventory](ARCHITECTURE.md) · [Current gates](STATUS.md)
+Date: 2026-10-23. [Full file inventory](../ARCHITECTURE.md) · [Current gates](../../README.md#project-status)
 
 ## Preserved baseline and branch state
 

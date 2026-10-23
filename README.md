@@ -1,21 +1,28 @@
-# Simulation-first bimanual SO-101 benchmark
+# Bimanual SO-101 benchmark
 
-A reproducible robotics benchmark in Isaac Sim: **the left SO-101 picks a 40 mm
-cube, transfers it to the right SO-101 in mid-air, and the right arm places it in
-a basket.** Both arms retreat; an independent evaluator checks the physical task.
-Repeated runs reset automatically between episodes.
+The left SO-101 picks up a 40 mm cube, hands it to the right SO-101 in mid-air,
+and the right arm places it in a basket. Both arms retreat. Isaac Sim provides
+physics and contact; an independent evaluator checks the result.
 
-The deterministic expert works under simulated gravity and contact. The completed
-pilot has **12/12 physical task successes, 12/12 automated recording-QA passes and
-3/3 selected physical action replay successes**. Human acceptance of the pilot
-videos is pending. There is **no accepted training dataset or trained policy in
-the reset pipeline**. See [current status and approval gates](docs/STATUS.md) and
-[measured pilot results](docs/PILOT_RESULTS.md).
+**Start here and follow steps 1–6 in order.** You can run the scene and expert
+now. Demonstration collection and policy training require separate approval.
 
-## Quick start
+## Table of contents
 
-Use the existing workstation environments. Do not reinstall or upgrade the locked
-simulation stack. Each terminal needs its own activation:
+1. [Setup](#1-setup)
+2. [Scene and cameras](#2-scene-and-cameras)
+3. [Expert IK and task execution](#3-expert-ik-and-task-execution)
+4. [Demonstrations](#4-demonstrations)
+5. [ACT and Diffusion](#5-act-and-diffusion)
+6. [Evaluation](#6-evaluation)
+7. [Project status](#project-status)
+8. [Code, detailed guides and historical records](#code-detailed-guides-and-historical-records)
+9. [Outputs and repository integration](#outputs-and-repository-integration)
+
+## 1. Setup
+
+These commands use the existing workstation. They do not install anything.
+Activate the environment in **each new terminal**:
 
 ```bash
 cd /home/rynem8/robotics/bimanual-so101-benchmark
@@ -23,117 +30,196 @@ source /home/rynem8/miniforge3/etc/profile.d/conda.sh
 conda activate leisaac-sim
 export LEISAAC_ASSETS_ROOT=/home/rynem8/robotics/leisaac/assets
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
-
+python --version
 python scripts/so101.py --help
+```
+
+Expect Python **3.11.16**. The locked simulation stack is Isaac Sim 5.1, Isaac
+Lab 2.3 and LeIsaac 0.4. The learning environment uses Python 3.12 and LeRobot
+0.6.1. Keep both environments: their Python/NumPy requirements differ. Both ACT
+and Diffusion use the same official LeRobot environment, not two custom models.
+[Exact versions and asset paths](docs/SIMULATION.md#environment-locks).
+
+## 2. Scene and cameras
+
+```bash
 python scripts/so101.py scene --frames
 ```
 
-`scene` opens the stationary task and a panel showing the actual overhead and
-both wrist RGB feeds. It only settles the initial physics state; it starts no
-expert, collection or task motion. Close Isaac Sim before launching another run.
+This opens two robots, the cube, basket and a panel with the actual overhead,
+left wrist and right wrist RGB images. Use the selector to choose a camera.
+Yellow guides show camera directions; axes show coordinate frames. You can orbit
+the viewport and expand `/World/InspectionGuides` in the Stage panel.
 
-Run the validated expert, without recording demonstrations:
+The scene settles for three simulated seconds, then freezes physics. The camera
+panel shows that settled state; the free viewport continues rendering. No expert
+motion, recording or collection starts. **Close the whole Isaac window before
+running the next command.** [Camera calibration and frames](docs/SIMULATION.md#cameras-and-coordinate-frames).
 
-```bash
-python scripts/so101.py expert
-```
-
-GUI is the default. Expect `[EPISODE] nominal/1: passed` and
-`[RESULT] passed_requested_stage`; verify `full_task_success` and the independent
-evaluation in the saved report. The final view stays open until you close Isaac.
-Use `--dry-run` to inspect a command, `--case yaw_minus_1deg` for a named scenario,
-`--episodes 3` for reset regression, or explicit `--headless --exit-after` for
-unattended evaluation. [Getting started](docs/GETTING_STARTED.md) explains expected
-views, outputs, environment checks and troubleshooting.
-
-Inspect the existing local pilot:
+## 3. Expert IK and task execution
 
 ```bash
-python scripts/so101.py dataset inspect \
-  --quality-report outputs/protocol_v1_pilot_qa/quality.json \
-  --ledger outputs/protocol_v1_pilot_run/attempts.jsonl
-python scripts/so101.py dataset review \
-  --episode datasets/protocol_v1_pilot/pilot_008_20261023T171324135324Z \
-  --output outputs/reviews/nominal.html
+python scripts/so101.py expert --output outputs/expert_manual
 ```
 
-Open the printed local HTML address to scrub synchronized images, joint positions,
-velocities and action targets. These commands review existing data; they do not
-collect, accept or train on it. [Dataset instructions](docs/DATASET.md) cover QA,
-physical replay, collection gates and future conversion.
+The expert executes pickup → lift → handover → basket placement → retreat.
+GUI is the default; the final state stays open for inspection. Close Isaac after
+reviewing it. `--episodes 3` repeats the task with automatic reset between attempts.
 
-## One command interface
+**What calculates the movement?** Our code uses SciPy bounded inverse kinematics
+(IK) to find five arm-joint angles for a requested fingertip pose. It checks the
+whole path against both robots, table, cube and basket. A cubic joint spline with
+quintic time scaling generates smooth position targets. Those targets are held
+at 20 Hz while Isaac executes 60 Hz physics. Contact feedback controls gripping;
+the cube is moved by simulated contact, not teleported.
+[Equations and source references](docs/SIMULATION.md#expert-ik-and-motion).
 
-| Operation | Command | Environment | Default behaviour |
-| --- | --- | --- | --- |
-| Scene and camera inspection | `python scripts/so101.py scene` | `leisaac-sim` | Stationary GUI and three actual feeds |
-| Deterministic expert | `python scripts/so101.py expert` | `leisaac-sim` | Full task, continuous motion, 20 Hz targets, grip feedback |
-| Manifest planning / collection | `python scripts/so101.py collect --help` | `leisaac-sim` | `plan` writes manifests; `run` only prints launches unless explicitly authorized |
-| Data inspection / QA / conversion | `python scripts/so101.py dataset --help` | Simulation for raw review/QA; learning for conversion/viz | Conversion previews; execution still requires accepted QA |
-| Official ACT / Diffusion training | `python scripts/so101.py train --help` | `so101-il-py312` | Config/data preflight only; separate authorization required for updates |
-| Checkpoint serving / simulation evaluation | `python scripts/so101.py evaluate --help` | Learning for `serve`; simulation for `run` | Real checkpoint and inference socket required |
-| Recorded-action physical replay | `python scripts/so101.py replay --help` | `leisaac-sim` | Original reset pose, shared physics and evaluator |
+Planning can take time: `[PLAN]` messages mean CPU collision checks are running
+while physics pauses. Expect `[EPISODE] nominal/1: passed` and
+`[RESULT] passed_requested_stage`. Check `full_task_success`, independent stage
+flags and failures in `outputs/expert_manual/simulation.json`; exit code alone
+is insufficient. The timestamped `full_*.json` preserves the run. `plans/` stores
+validated planning caches.
 
-For future training preflight, activate the existing learning environment:
+Preview the command without opening Isaac, or run a named regression case:
+
+```bash
+python scripts/so101.py expert --dry-run
+python scripts/so101.py expert --case yaw_minus_1deg --output outputs/expert_yaw
+```
+
+## 4. Demonstrations
+
+A demonstration is a **recorded physical expert episode**, not an IK solution or
+a video alone. Each 20 Hz row pairs three RGB images and measured joint state
+with the absolute joint target applied over the next three physics ticks.
+
+Inspect the preserved pilot without recording anything:
+
+```bash
+python scripts/so101.py dataset inspect --quality-report outputs/protocol_v1_pilot_qa/quality.json --ledger outputs/protocol_v1_pilot_run/attempts.jsonl
+python scripts/so101.py dataset review --episode datasets/protocol_v1_pilot/pilot_008_20261023T171324135324Z --output outputs/reviews/nominal.html
+```
+
+Open the printed HTML address locally. Scrub the three synchronized images with
+the measured joints and next action. Use a new HTML output name when repeating.
+For all 12 attempts, open `outputs/protocol_v1_pilot_report/index.html` locally.
+These recordings are local and intentionally absent from GitHub.
+
+**No final collection is authorized.** The consumed pilot is excluded from
+training. Review all 12 videos/data first; future train/validation attempts need
+separate approval. Failed attempts must remain counted.
+[Design, fields, QA, replay and conversion procedure](docs/DATASET.md).
+
+## 5. ACT and Diffusion
+
+There is **no accepted training dataset or trained policy in the reset pipeline**.
+Both future policies will use official LeRobot implementations and the same
+approved three-camera/joint observations. They predict joint-action chunks;
+they do not run expert IK during inference.
+
+Switch this terminal to the existing learning environment:
 
 ```bash
 source /home/rynem8/miniforge3/etc/profile.d/conda.sh
 conda activate so101-il-py312
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
-python scripts/so101.py train --policy act --config matched-v1 \
-  --dataset datasets/lerobot_train --output checkpoints/act_seed17 --seed 17
+python scripts/so101.py train --policy act --config matched-v1 --dataset datasets/lerobot_train --output checkpoints/act_seed17 --seed 17
+python scripts/so101.py train --policy diffusion --config matched-v1 --dataset datasets/lerobot_train --output checkpoints/diffusion_seed17 --seed 17
 ```
 
-This prints the official LeRobot command and checks prerequisites. It currently
-stops because an accepted converted training dataset does not exist. Change
-`--policy diffusion` and output name for the other official policy. No optimizer
-runs without explicit execution, session authorization and a hash-bound approval.
-Read [ACT, Diffusion and inference](docs/POLICIES.md) before training anything.
+These are **preflight commands**, not training. They show the official command and
+check configuration/data. They currently reject the missing accepted dataset.
+After approved collection, QA and conversion, actual training needs explicit
+execution flags and a genuine hash-bound approval record. See the
+[complete policy procedure](docs/POLICIES.md) for inputs, horizons, reasons for the
+recipe, training, checkpoints and resume. Do not treat config parsing as evidence
+of convergence or manipulation success.
 
-## Learn and navigate
+## 6. Evaluation
 
-| Guide | What it answers |
+You can replay an existing recording now, in a fresh `leisaac-sim` terminal
+activated as in step 1:
+
+```bash
+python scripts/so101.py replay --episode datasets/protocol_v1_pilot/pilot_008_20261023T171324135324Z --output outputs/replay_nominal_manual
+```
+
+Replay sends recorded targets to real simulated actuators and the independent
+evaluator. It does not write recorded robot/cube states into the scene. It stops
+at independent success, so the final recorded settling tail may be omitted.
+
+**For a future trained policy**, use two terminals: the learning environment
+serves the real checkpoint; the simulation environment runs the shared task.
+There is no trained checkpoint to run today.
+
+Terminal A, `so101-il-py312`; add `--execute` only when this checkpoint exists:
+
+```bash
+python scripts/so101.py evaluate serve --policy act --checkpoint checkpoints/act_seed17/checkpoints/100000/pretrained_model --socket /tmp/so101-act.sock
+```
+
+Terminal B, `leisaac-sim`, after the real server prints `[READY]`:
+
+```bash
+python scripts/so101.py evaluate run --socket /tmp/so101-act.sock --manifest outputs/demonstration_protocol_v1/validation.json --split validation --output outputs/evaluation/act_seed17_validation
+```
+
+Use the same declared cases, reset, physics, 20 Hz action interface and evaluator
+for expert, ACT and Diffusion. Report all failures and stage/full-task success.
+[Inference details and fair comparison](docs/POLICIES.md#validation-and-fair-evaluation).
+
+## Project status
+
+This section is the current status and approval authority. Historical logs do
+not override it.
+
+| Established by evidence | Still unverified / not approved |
 | --- | --- |
-| [Getting started and environment locks](docs/GETTING_STARTED.md) | Which Python? What do I run and expect? |
-| [Simulation, cameras and coordinate frames](docs/SIMULATION.md) | Where do the robots/cameras come from? What is calibrated? |
-| [Deterministic controller](docs/CONTROLLER.md) | Which FK, IK, collision and trajectory methods are actually used? |
-| [Dataset procedure and field reference](docs/DATASET.md) | What is recorded, reviewed, replayed and converted? |
-| [Provisional demonstration protocol](docs/DEMONSTRATION_PROTOCOL.md) | How many attempted cases, which variations and why? |
-| [Official policies and evaluation](docs/POLICIES.md) | Inputs, targets, horizons, training, checkpoints and fair comparison |
-| [Architecture and complete file inventory](docs/ARCHITECTURE.md) | What does each file/function do? |
-| [Repository audit and proposed cleanup](docs/REPOSITORY_AUDIT.md) | Which files/branches are historical? What could be removed after approval? |
-| [Consolidation verification](docs/VERIFICATION.md) | What was tested, with which commands and limitations? |
+| Deterministic pickup, lift, mid-air handover, placement and automatic reset | Broad-distribution reliability and real-hardware transfer |
+| Approved frozen overhead + two wrist cameras; owner accepted scene/HTML workflow and guide fix | Physical camera-mount registration and hardware calibration |
+| 12/12 physical pilot successes, 12/12 automated QA passes, 3/3 selected physical replays | Human acceptance of all 12 demonstrations; the other nine physical replays |
+| Official ACT/Diffusion command/config preflight and guarded inference interface | Accepted training corpus, optimizer updates, trained inference and learned task success |
 
-Core flow: `so101.py` → `run_manipulation.py` (expert/replay/policy client) →
-`benchmark_env.py` (shared physics) → `benchmark_core.py` (independent evaluation).
-`so101_model.py` and `so101_planning.py` supply geometry/IK/paths. `policy_cameras.py`
-supplies sensors/inspection; `dataset_io.py` records transitions;
-`demonstration_pipeline.py` plans and audits attempts; `policy_pipeline.py` adapts
-them to official LeRobot. Tests live in `tests/`; approved cameras and the active
-protocol are in `configs/`. Historical diagnostics are inventoried separately.
+The provisional design proposes 100 train /20 validation attempts and 100
+held-out evaluation cases. **Collection, augmentation and all policy training
+remain unauthorized.** The current assignment is consolidation only. Main
+integration and the exact file/branch deletions require one final approval.
+Approved camera/protocol JSON bytes, controller, evaluator and action semantics
+remain fixed. [Measured pilot details](docs/DATASET.md#measured-pilot-results).
 
-## Reproducibility and limits
+## Code, detailed guides and historical records
 
-The existing stack is Isaac Sim 5.1, Isaac Lab 2.3, LeIsaac 0.4 and a separate
-LeRobot 0.6.1 environment; [exact versions](docs/GETTING_STARTED.md#environment-locks)
-and [the learning package lock](configs/il_requirements.lock.txt) are recorded.
-Camera parameters are frozen in [policy_cameras.json](configs/policy_cameras.json).
-The active provisional design is [demonstration_protocol.json](configs/demonstration_protocol.json),
-not the historical `task_distribution.json`.
+After the six README steps, open only the guide needed for your question:
 
-Source, configuration, tests and measured result summaries are versioned. Raw
-recordings, generated reports/videos, caches and checkpoints remain local and
-ignored by Git. GitHub-only reviewers can read all guides and tracked results;
-local artifact paths in code examples require the workstation's preserved data.
+| Guide | Purpose |
+| --- | --- |
+| [Simulation and expert](docs/SIMULATION.md) | Environment locks, USD assets, camera transforms, FK/IK, collision checks, trajectories and physical evaluation |
+| [Demonstrations](docs/DATASET.md) | Dataset design, exact record fields, acceptance, conversion and measured pilot results |
+| [Policies and evaluation](docs/POLICIES.md) | Official ACT/Diffusion recipe, training/resume, inference and comparison limits |
+| [Code map](docs/ARCHITECTURE.md) | Every maintained file/API, output retention and exact integration/removal scope |
 
-Most existing `outputs/` files are generated evidence, plans or diagnostics, not
-code needed to launch the expert. The pilot's many PNGs are its three synchronized
-lossless camera streams. Verified stale caches and disposable previews were
-cleaned; [the output inventory and retention rules](docs/REPOSITORY_AUDIT.md#generated-output-cleanup-and-retention)
-explain what remains and why.
+Core flow: `so101.py` → `run_manipulation.py` → shared `benchmark_env.py` and
+`benchmark_core.py`. Model/planner compute expert motion; dataset and policy
+modules record, validate, convert and serve actions. Imported modules are not
+additional commands you need to run.
 
-The pilot is a purpose-selected set of corners/reference poses, not a statistical
-estimate of broad task reliability. Camera extrinsics are simulation estimates,
-not a real-hardware calibration. No learned controller or sim-to-real transfer is
-validated. Earlier failed learning experiments are preserved as explicitly
-[historical evidence](docs/POLICY_REVIEW.md), outside the operating instructions.
+Historical engineering, failed-policy reviews, pilot report and old verification
+logs live separately under [docs/archive](docs/archive). They preserve evidence;
+they are not a second operating procedure.
+
+## Outputs and repository integration
+
+Source/configs/tests are versioned. Raw data, weights and generated outputs stay
+local. The 107,394 pilot PNGs are three original lossless image streams plus
+terminal diagnostics, not redundant scripts. Preserve the recordings, QA reports,
+reference benchmark and camera-approval evidence. Disposable caches removed in
+the previous cleanup are **not counted again**; this pass found no identical
+stationary PNG previews to delete. [What remains and why](docs/ARCHITECTURE.md#local-outputs).
+
+Continue on `feat/repository-consolidation`; no new branch is needed. The
+[exact integration/removal package](docs/ARCHITECTURE.md#integration-approval)
+is ready for one owner decision. It proposes fast-forwarding `main`, publishing
+it, then deleting the four incorporated feature branches. Git history and existing
+recovery tags remain. Until approval, the eight listed removal candidates remain
+on disk and `main` is unchanged.

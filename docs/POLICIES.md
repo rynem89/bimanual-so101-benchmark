@@ -1,12 +1,22 @@
 # Official ACT, Diffusion and policy evaluation
 
-[Dataset prerequisites](DATASET.md) · [Approval gates](STATUS.md) · [Code map](ARCHITECTURE.md)
+[Dataset prerequisites](DATASET.md) · [Current gates](../README.md#project-status) · [Code map](ARCHITECTURE.md)
+
+## Contents
+
+- [Approach and current state](#current-state-and-approach)
+- [Inputs, targets and horizons](#inputs-targets-and-horizons)
+- [Preflight](#verified-command-preparation--no-training)
+- [Training procedure](#start-training-later-only-after-acceptance-and-authorization)
+- [Checkpoints and resume](#checkpoints-and-resume)
+- [Validation and fair evaluation](#validation-and-fair-evaluation)
+- [Run trained inference](#see-a-real-trained-checkpoint-in-the-simulator-later)
 
 ## Current state and approach
 
 There is **no trained checkpoint or accepted training dataset in the reset
 pipeline**. The earlier failed ACT/Diffusion experiments are documented in the
-[historical review](POLICY_REVIEW.md); their images, small data coverage and
+[historical review](archive/POLICY_REVIEW.md); their images, small data coverage and
 unvalidated choices are not a current recipe. No optimizer update is authorized
 or executed in repository consolidation.
 
@@ -59,7 +69,7 @@ an explicitly permitted download when real training is later authorized.
 
 ## Verified command preparation — no training
 
-Activate `so101-il-py312` as in [getting started](GETTING_STARTED.md#environment-locks).
+Activate `so101-il-py312` as in [environment locks](SIMULATION.md#environment-locks).
 The recipe file is [policy_training.json](../configs/policy_training.json).
 
 ```bash
@@ -181,7 +191,7 @@ removed during cleanup).
 Checked against installed 0.6.1: `lerobot_train --help`, `lerobot_dataset_viz
 --help`, `TrainPipelineConfig`, `DatasetConfig`, both policy config dataclasses,
 parser wrapper, model serving/processors and checkpoint layout. See
-[verification](VERIFICATION.md) for actual checks and failures found while adapting.
+[archived verification](archive/VERIFICATION.md) for actual checks and failures found while adapting.
 Primary references: [official training workflow](https://huggingface.co/docs/lerobot/v0.6.1/il_robots),
 [ACT config](https://github.com/huggingface/lerobot/blob/v0.6.1/src/lerobot/policies/act/configuration_act.py),
 [Diffusion config](https://github.com/huggingface/lerobot/blob/v0.6.1/src/lerobot/policies/diffusion/configuration_diffusion.py),

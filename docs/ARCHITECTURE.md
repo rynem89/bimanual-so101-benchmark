@@ -1,6 +1,6 @@
-# Architecture and complete file inventory
+# Code map, outputs and integration
 
-[README](../README.md) · [Controller](CONTROLLER.md) · [Repository audit](REPOSITORY_AUDIT.md)
+[README](../README.md) · [Simulation/expert](SIMULATION.md#expert-ik-and-motion) · [Data](DATASET.md)
 
 ## Runtime relationships
 
@@ -47,13 +47,10 @@ commands to run. All public data uses metres/radians/seconds unless stated.
 | [scripts/demonstration_pipeline.py](../scripts/demonstration_pipeline.py) — essential data pipeline | Protocol/approval → fixed manifests and guarded launches; raw/evidence → QA and pilot report | `so101.py collect`, `dataset validate`; low-level `pilot-report` joins existing evidence |
 | [scripts/policy_pipeline.py](../scripts/policy_pipeline.py) — essential learning adapter | Accepted raw → official v3; named recipe → official CLI/preflight; checkpoint+RGB/state → actions | `so101.py dataset convert`, `train`, `evaluate serve`; learning environment |
 
-`run_manipulation.py` was reviewed (980 lines; largest orchestration functions
-`main` 189 lines and `Episode.run` 159 lines). Its algorithm/control code is
-intentionally unchanged. Moving live phase logic or removing old flags purely to
-shorten the file would introduce regression risk without simplifying the owner's
-commands. The new interface provides one supported full-task path; the function
-map below and controller guide make the existing phases discoverable. A later
-internal extraction should have its own physical regression and approval scope.
+The supported user entry point is `so101.py`. The existing layout module is an
+imported scene definition despite its `inspect_task_layout.py` name; keeping its
+path preserves runtime/provenance compatibility. The controller and other runtime
+modules were not renamed or rewritten for this cleanup.
 
 ## Public function map
 
@@ -77,55 +74,153 @@ internal extraction should have its own physical regression and approval scope.
 | `training_command/parse_official_training/training_dataset_proof/train_official` | Named recipe + accepted train root + optional approval → official config preflight or explicitly authorized official process |
 | `convert/serve` | Accepted raw partition /real checkpoint → official dataset /saved-processor policy actions |
 
-## Diagnostics, tests and historical experiments
+## Diagnostics and tests
 
-| File / classification | Purpose / status |
+Only two standalone diagnostics remain maintained. They cover evidence that the
+scene viewer and unit tests do not replace:
+
+| File | Purpose / run |
 | --- | --- |
-| [scripts/audit_so101_finger_geometry_v2.py](../scripts/audit_so101_finger_geometry_v2.py) — maintained diagnostic | USD instance/collision/triangle audit and jaw sections; `--offline` avoids simulator. Kept because it exposes evidence beyond the viewer. |
-| [scripts/verify_motion_gripper_reset.py](../scripts/verify_motion_gripper_reset.py) — maintained diagnostic | Deliberate shoulder/jaw motion and 120 mm cube disturbance followed by measured resets; no grasp control. Its old “not yet verified” printouts describe original scope, not current project status. |
-| [scripts/inspect_bimanual_scene.py](../scripts/inspect_bimanual_scene.py) — historical experiment | Older foundation scene and gravity/joint-stability sweeps. It moves robots by default; do not use for current stationary inspection. No active runtime imports. |
-| [scripts/inspect_fk_frames.py](../scripts/inspect_fk_frames.py) — historical experiment | Earlier two-arm frame/motion experiment; largely superseded by task layout/model tests. No active runtime imports. |
-| [tests/test_benchmark.py](../tests/test_benchmark.py) — test | Independent stage/failure/reset logic, trajectory and transfer math; synthetic evidence, not physics completion |
-| [tests/test_so101_model.py](../tests/test_so101_model.py) — test | USD/FK/IK, hull/path/cache and bounded-RRT regression; real asset required |
-| [tests/test_finger_geometry.py](../tests/test_finger_geometry.py) — test | Analytic triangle section/prerequisite checks |
-| [tests/test_dataset.py](../tests/test_dataset.py) — test | On-disk held-target, timing, bounds, image/terminal transitions and modality isolation |
-| [tests/test_policy_cameras.py](../tests/test_policy_cameras.py) — test | Optical conventions/attachments and frame continuity corruption checks |
-| [tests/test_demonstration_pipeline.py](../tests/test_demonstration_pipeline.py) — test | Fixed plans, tamper checks, collection/human/QA gates with synthetic files |
-| [tests/test_cli.py](../tests/test_cli.py) — test | Lightweight help, validated defaults, replay preview, split labeling, failure inventory and training authorization boundaries |
+| [scripts/audit_so101_finger_geometry_v2.py](../scripts/audit_so101_finger_geometry_v2.py) | Authored USD instance/triangle and jaw-surface audit; `python scripts/audit_so101_finger_geometry_v2.py --offline` |
+| [scripts/verify_motion_gripper_reset.py](../scripts/verify_motion_gripper_reset.py) | Deliberate joint/jaw motion and 120 mm cube disturbance followed by measured reset; `python scripts/verify_motion_gripper_reset.py` in the simulation environment |
+| [tests/test_benchmark.py](../tests/test_benchmark.py) | Independent stage/failure/reset logic and trajectory/transfer mathematics |
+| [tests/test_so101_model.py](../tests/test_so101_model.py) | USD/FK/IK, collision/path/cache and bounded-RRT regressions; requires the existing asset |
+| [tests/test_finger_geometry.py](../tests/test_finger_geometry.py) | Analytic triangle sections and prerequisite failures |
+| [tests/test_dataset.py](../tests/test_dataset.py) | Held targets, timing, images, terminal transitions and policy/diagnostic isolation |
+| [tests/test_policy_cameras.py](../tests/test_policy_cameras.py) | Optical conventions, attachment and continuity-corruption checks |
+| [tests/test_demonstration_pipeline.py](../tests/test_demonstration_pipeline.py) | Manifest reproducibility, tamper checks and collection/human/QA gates |
+| [tests/test_cli.py](../tests/test_cli.py) | Lightweight help/defaults, replay preview, split labels and training authorization |
 
-## Configurations, assets and documentation
+## Configurations and other maintained files
 
-| File / classification | Responsibility / authority |
+| File | Purpose / authority |
 | --- | --- |
-| [configs/policy_cameras.json](../configs/policy_cameras.json) — active frozen configuration | Approved three-camera extrinsics, optics, sampling and provenance; do not edit |
-| [configs/demonstration_protocol.json](../configs/demonstration_protocol.json) — active provisional configuration | Proposed counts, bounds, sampling, QA thresholds and comparison budget; byte-frozen through review, not an authorization log |
-| [configs/policy_training.json](../configs/policy_training.json) — proposed configuration | Named `matched-v1` official CLI recipe; no optimizer implementation or training permission |
-| [configs/il_requirements.lock.txt](../configs/il_requirements.lock.txt) — environment record | Exact installed learning packages, not an instruction to reinstall |
-| [configs/camera_v2_pilot.json](../configs/camera_v2_pilot.json) — historical configuration | Superseded one-pose camera placeholder; not the consumed 12-attempt pilot |
-| [configs/task_distribution.json](../configs/task_distribution.json) — historical configuration | Old inward-v2 32/8/30 cases and offline status; not the current protocol or fresh held-out set |
-| [assets/camera_mount/README.md](../assets/camera_mount/README.md), [LICENSE](../assets/camera_mount/LICENSE), [STL](../assets/camera_mount/SO-ARM101_camera_wrist_mount.stl) — reference asset/docs | Licensed optional mount; not physically instantiated/registered |
-| [README.md](../README.md) — documentation | Concise project entry and quick start |
-| [AGENTS.md](../AGENTS.md) — operating instructions | Agent scope, source authorities, preservation and approval rules |
-| [docs/STATUS.md](STATUS.md) — documentation | Sole current-status/permission authority |
-| [docs/GETTING_STARTED.md](GETTING_STARTED.md) — documentation | Commands, expected GUI/output and authoritative environment table |
-| [docs/SIMULATION.md](SIMULATION.md) — documentation | USD, cameras, optical/frame conventions and hardware gaps |
-| [docs/CONTROLLER.md](CONTROLLER.md) — documentation | Actual FK/IK/collision/trajectory/grasp/evaluation implementation |
-| [docs/DATASET.md](DATASET.md) — documentation | Raw fields, review, QA, gated collection, replay and conversion |
-| [docs/DEMONSTRATION_PROTOCOL.md](DEMONSTRATION_PROTOCOL.md) — documentation | Provisional research design and rationale, with completed-pilot measurements |
-| [docs/POLICIES.md](POLICIES.md) — documentation | Official policy recipe, training/resume/inference and unverified limits |
-| [docs/ARCHITECTURE.md](ARCHITECTURE.md) — documentation | This complete file/API map |
-| [docs/PILOT_RESULTS.md](PILOT_RESULTS.md) — measured results | Curated 12-attempt counts, cases, timings, storage and replay limits |
-| [docs/VERIFICATION.md](VERIFICATION.md) — measured results | Consolidation regression commands/results and pending human checkpoint |
-| [docs/REPOSITORY_AUDIT.md](REPOSITORY_AUDIT.md) — audit | Branch/file classifications and proposed removals, no deletion authorization |
-| [docs/ROBOTICS_CODEX_HANDOFF.md](ROBOTICS_CODEX_HANDOFF.md) — historical archive | Original engineering commands/results and dated failures; no current operating authority |
-| [docs/POLICY_REVIEW.md](POLICY_REVIEW.md), [docs/POLICY_REVIEW_METADATA.json](POLICY_REVIEW_METADATA.json) — historical evidence | Earlier failed learning choices/configuration/provenance; `current_models` means current at that historical audit, not existing models now |
-| [.gitignore](../.gitignore) — repository configuration | Excludes outputs, data, weights, caches, environments and secrets |
-| [.vscode/settings.json](../.vscode/settings.json) — editor configuration | Existing Conda environment/package manager selection |
+| [configs/policy_cameras.json](../configs/policy_cameras.json) | Approved, frozen camera calibration; preserve exact bytes |
+| [configs/demonstration_protocol.json](../configs/demonstration_protocol.json) | Active provisional sampling/QA design; preserve exact bytes, not an authorization log |
+| [configs/policy_training.json](../configs/policy_training.json) | Proposed named `matched-v1` official recipes; no training permission |
+| [configs/il_requirements.lock.txt](../configs/il_requirements.lock.txt) | Exact installed learning packages; not an instruction to reinstall |
+| [README.md](../README.md) | Single starting point: six ordered operations, status and permissions |
+| [AGENTS.md](../AGENTS.md) | Agent contract; directs agents to README rather than a second status document |
+| [docs/SIMULATION.md](SIMULATION.md) | Setup reference, USD, cameras, FK/IK, collision paths and physical control/evaluation |
+| [docs/DATASET.md](DATASET.md) | Protocol rationale, fields, acceptance, replay, conversion and measured pilot results |
+| [docs/POLICIES.md](POLICIES.md) | Official ACT/Diffusion training, checkpointing, inference and fair comparison |
+| [docs/ARCHITECTURE.md](ARCHITECTURE.md) | This maintained file/API map, output retention and integration scope |
+| [assets/camera_mount/README.md](../assets/camera_mount/README.md), [LICENSE](../assets/camera_mount/LICENSE), [STL](../assets/camera_mount/SO-ARM101_camera_wrist_mount.stl) | Licensed optional mechanical reference; not instantiated as mass/collision geometry |
+| [.gitignore](../.gitignore) | Excludes secrets, environments, datasets, weights, generated outputs and caches |
+| [.vscode/settings.json](../.vscode/settings.json) | Existing local editor interpreter/package-manager settings |
 
-## Generated/local files
+Historical records are outside the learning sequence:
 
-`datasets/` contains raw data and any later converted copies; `outputs/` contains
-reports, plans, screenshots/review media and ignored caches; `checkpoints/` is
-currently empty. `logs/`, `runs/`, Python caches and model caches are generated,
-not source. Their absence on GitHub is intentional. No unknown tracked file was
-silently classified as expendable; all removal proposals are in the audit.
+| Existing record moved into `docs/archive/` | Retained evidence |
+| --- | --- |
+| [docs/archive/ROBOTICS_CODEX_HANDOFF.md](archive/ROBOTICS_CODEX_HANDOFF.md) | Original dated geometry/control/benchmark development and failures |
+| [docs/archive/POLICY_REVIEW.md](archive/POLICY_REVIEW.md) | Earlier failed learning choices, data/camera shortcomings and reasoning |
+| [docs/archive/POLICY_REVIEW_METADATA.json](archive/POLICY_REVIEW_METADATA.json) | Byte-preserved machine-readable snapshot; original path strings are historical identifiers |
+| [docs/archive/PILOT_RESULTS.md](archive/PILOT_RESULTS.md) | Complete dated 12-attempt table and physical replay results |
+| [docs/archive/VERIFICATION.md](archive/VERIFICATION.md) | Measured consolidation regression evidence and this final cleanup's focused checks |
+| [docs/archive/REPOSITORY_AUDIT.md](archive/REPOSITORY_AUDIT.md) | Previous inventory and already-completed cache cleanup; its old proposals are superseded by the exact package below |
+
+## Local outputs
+
+`scene` and `expert` need source/configs, the installed environments and external
+LeIsaac USD. They do not need old output folders. Research reproducibility does:
+
+| Preserve at its current path | Why |
+| --- | --- |
+| `datasets/protocol_v1_pilot/` — 12 attempts, 107,454 files, 11,222,342,915 bytes | Original lossless RGB, transitions, captures and independent outcomes; review/conversion hashes depend on these bytes |
+| `outputs/protocol_v1_pilot_run/`, `outputs/protocol_v1_pilot_qa/`, `outputs/protocol_v1_pilot_report/`, `outputs/protocol_v1_pilot_replay/` | Actual authorization/attempt counts, exhaustive QA, review media and three physical replay proofs |
+| `outputs/demonstration_protocol_v1/` | Exact hash-bound pilot and planned partition manifests |
+| `outputs/controller/` — about 357 MB | Reference physical benchmark, transfer traces and checked plans |
+| `outputs/camera_v2/`, `outputs/camera_overview_v3/` | Approved framing comparisons and camera attachment/timing evidence |
+| `outputs/repository_consolidation/` | Final regression reports, owner-reviewed HTML and diagnostic images/logs; these are evidence, not additional user programs |
+| `outputs/policy_traces/` — about 57 MB | Original failed-policy inputs/actions; retained failure evidence, not new training data |
+| `outputs/torch/hub/checkpoints/resnet18-f37072fd.pth` — 46.83 MB | Reusable ImageNet backbone, not a trained SO-101 model; keeping it avoids another download |
+| Small geometry/model/proposal outputs | Original engineering evidence; no blanket deletion |
+
+The previous cleanup already removed 73 disposable cache/preview files totaling
+776,310,957 bytes. Its exact local manifest remains
+`outputs/repository_consolidation/cleanup_manifest.json`. This pass does not repeat
+or recount that deletion. No byte-identical stationary PNG preview groups were
+found. No additional generated evidence is selected for removal. Ordinary Python
+bytecode and reader caches may regenerate; their presence does not add maintained
+source files. No datasets, checkpoints or evidence folders are in the deletion
+package below.
+
+## Focused checks
+
+Choose checks that match the change. Documentation changes need link/anchor,
+command-syntax, dependency and preservation checks; do not rerun broad geometry
+or physical tasks merely for prose. To check the interface in `leisaac-sim`:
+
+```bash
+PYTHONPATH=scripts python -m unittest discover -s tests -p test_cli.py -v
+```
+
+For relevant model changes only, use the existing bundled USD libraries:
+
+```bash
+USD_LIB="$CONDA_PREFIX/lib/python3.11/site-packages/isaacsim/extscache/omni.usd.libs-1.0.1+69cbf6ad.lx64.r.cp311"
+PYTHONPATH="scripts:$USD_LIB" LD_LIBRARY_PATH="$USD_LIB/bin:$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" python -m unittest discover -s tests -p test_so101_model.py -v
+```
+
+Use actual independent simulation evaluation for a control/physics change. This
+cleanup changes neither. The previous expert/replay regressions and owner-approved
+viewer/HTML workflow remain the physical/usability evidence, preserved in the
+[verification record](archive/VERIFICATION.md).
+
+## Integration approval
+
+The final content is prepared on `feat/repository-consolidation`; no new branch.
+The eight files below stay on disk until the owner's single approval. Their useful
+documentation is already consolidated; the unused code/configs are not maintained
+interfaces. Git commit `bbb15f5` preserves the complete pre-cleanup tree.
+
+| Exact tracked removal | Dependency check / where its useful content went |
+| --- | --- |
+| `docs/GETTING_STARTED.md` | README steps 1–3 and SIMULATION environment reference |
+| `docs/CONTROLLER.md` | SIMULATION expert equations, contact control and evaluator |
+| `docs/DEMONSTRATION_PROTOCOL.md` | DATASET design, randomization, fairness and measured budget |
+| `docs/STATUS.md` | README project status is the single current authority |
+| `scripts/inspect_fk_frames.py` | No runtime/test/config imports; retire the old standalone FK motion experiment, not an equivalent replacement for every old measurement |
+| `scripts/inspect_bimanual_scene.py` | No runtime/test/config imports; retire the old no-basket/gravity sweep; current scene and reset diagnostics remain |
+| `configs/camera_v2_pilot.json` | Unused one-pose placeholder; the consumed 12-attempt pilot uses its preserved manifest and active protocol |
+| `configs/task_distribution.json` | Unused old 32/8/30 experiment; historical review retains the original identifiers/hash; no active reader |
+
+The retired files remain accessible through [the pre-cleanup Git tree](https://github.com/rynem89/bimanual-so101-benchmark/tree/bbb15f533c186537f81846ac3dc75c6a0a14484e).
+The six archive relocations above preserve the existing files rather than adding
+new documentation. After the approved eight removals:
+
+| Count (tracked working tree) | Before (`bbb15f5`) | Final prepared tree |
+| --- | ---: | ---: |
+| All tracked files | 49 | 41 |
+| Active guides under `docs/` | 11 | 4 |
+| Python source scripts | 15 | 13 |
+| Configs, including dependency lock | 6 | 4 |
+| Tests | 7 | 7 |
+| Historical Markdown records | 2 beside active guides | 5 separated under `docs/archive/` |
+| Local /remote branches | 5 /5 | 1 /1 (`main`) |
+
+README, AGENTS and the asset license/README are counted in total files but not in
+the four active detailed guides. The archival metadata JSON is a record, not an
+active config. Current on-disk total stays 49 until the eight removals are approved.
+
+### Exact final Git operations requiring approval
+
+1. Recheck remote tips and require `main` still at
+   `c01651938f6220a23cb19ce3734670376e3eead5`. Stop for changed/divergent tips.
+2. Delete only the eight listed files, run focused final-tree checks and commit
+   the removals on the existing consolidation branch. Publish that review branch.
+3. Fast-forward local `main` to the checked consolidation tip (`git merge --ff-only`),
+   then push `main`. No squash, history rewrite or force-push.
+4. Only after GitHub `main` is verified at that tip, delete these four branches
+   **locally and remotely**: `feat/gripper-characterization`,
+   `feat/fingertip-geometry-calibration`, `feat/il-camera-dataset-v2`,
+   `feat/repository-consolidation`. All five current tips were verified ancestors
+   of the consolidation branch; their commits remain in main's history.
+5. Keep all existing recovery tags, pilot data, weights and benchmark evidence.
+   The final remaining branch is `main`; no new branch or tag is created.
+
+Approval covers this exact package, not collection, augmentation, training,
+new features, dependency changes or any other deletion. If GitHub main protection
+blocks the push, stop and report that restriction; do not delete remote feature
+branches before integration is verified.
