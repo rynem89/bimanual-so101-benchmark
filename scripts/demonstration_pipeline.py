@@ -339,6 +339,161 @@ def validate(args) -> dict:
     return report
 
 
+def sampled_cube_visibility(root, frames):
+    """Colour proxy inside projected cube ROI; not certified segmentation or contact."""
+    from itertools import product
+    from policy_cameras import quaternion_rotation
+    captures=[json.loads(line) for line in (root/'captures.jsonl').read_text().splitlines()][:frames]
+    privileged=json.loads((root/'privileged.json').read_text());indices={'initial':0}
+    phases=('close','hold','right_close','left_release','right_only_hold','bin_release','bin_settle')
+    for i,row in enumerate(captures):
+        if row['phase'] in phases:indices[row['phase']]=i
+    corners=np.array(list(product((-.02,.02),repeat=3)));samples={}
+    for phase,index in indices.items():
+        row=captures[index];cube=np.array(privileged[index]['cube'])
+        world=corners@quaternion_rotation(cube[3:7]).T+cube[:3];views={}
+        for name in NAMES:
+            camera=row['cameras'][name]
+            local=(world-camera['position_world_m'])@quaternion_rotation(camera['quaternion_ros_wxyz'])
+            record=dict(red_pixels_in_projected_cube_roi=0,visible_red_bbox_wh_px=[0,0])
+            if np.all(local[:,2]>.01):
+                uv=local@np.array(camera['intrinsic']).T;uv=uv[:,:2]/uv[:,2,None]
+                lo=np.maximum(np.floor(uv.min(0)).astype(int)-2,[0,0]);hi=np.minimum(np.ceil(uv.max(0)).astype(int)+3,[640,480])
+                record['projected_bbox_xyxy_px']=[*lo.tolist(),*hi.tolist()]
+                if np.all(hi>lo):
+                    with Image.open(root/name/f'{index:06d}.png') as image:rgb=np.asarray(image)[lo[1]:hi[1],lo[0]:hi[0]].astype(float)
+                    mask=(rgb[:,:,0]>100)&(rgb[:,:,0]>1.35*rgb[:,:,1])&(rgb[:,:,0]>1.35*rgb[:,:,2]);y,x=np.where(mask)
+                    record['red_pixels_in_projected_cube_roi']=len(x)
+                    if len(x):record['visible_red_bbox_wh_px']=[int(x.max()-x.min()+1),int(y.max()-y.min()+1)]
+            views[name]=record
+        samples[phase]=dict(index=index,physics_step=row['physics_step'],views=views,
+            any_view_red_width_at_least_12px=any(view['visible_red_bbox_wh_px'][0]>=12 for view in views.values()))
+    return samples
+
+
+def pilot_report(args):
+    """Join immutable pilot evidence; never grant human acceptance or start simulation."""
+    import csv
+    import html
+    import os
+    from collections import Counter
+    manifest=load_manifest(args.manifest,args.protocol)
+    qa=json.loads(args.quality_report.read_text())
+    if manifest['partition']!='pilot' or qa['manifest_sha256']!=sha(args.manifest):
+        raise ValueError('Require matching pilot manifest and completed QA')
+    ledger=[json.loads(line) for line in (args.run/'attempts.jsonl').read_text().splitlines()]
+    finishes={row['case']:row for row in ledger if row['event']=='finished'}
+    starts=[row for row in ledger if row['event']=='started']
+    expected={case['name'] for case in manifest['cases']}
+    if len(starts)!=len(expected) or {row['case'] for row in starts}!=expected or set(finishes)!=expected:
+        raise ValueError('Pilot attempt denominator incomplete or duplicated')
+    if not qa['ledger_complete']:raise ValueError('Incomplete QA attempt ledger')
+    args.output.mkdir(parents=True,exist_ok=False)
+    quality_by_case={row['case']:row for row in qa['episodes'] if 'case' in row}
+    cases=[];reviews=[]
+    for case in manifest['cases']:
+        name=case['name'];proof=quality_by_case[name]
+        run=json.loads((args.run/name/'simulation.json').read_text())
+        episode=run['episodes'][0] if run.get('episodes') else {}
+        evaluation=episode.get('independent_evaluation',{})
+        root=Path(proof['path']) if 'path' in proof else None
+        meta=json.loads((root/'episode.json').read_text()) if root and (root/'episode.json').exists() else {}
+        if meta and evaluation!=meta['evaluation']:
+            raise ValueError('Run report disagrees with hash-bound recorded physical evaluation: '+name)
+        if proof.get('automatic_pass') and episode_digest(root)!=proof['digest']:
+            raise ValueError('Raw data changed after QA: '+name)
+        files=list(root.rglob('*')) if root else []
+        size=sum(path.stat().st_size for path in files if path.is_file())
+        replay_path=args.replay_run/name/'simulation.json' if args.replay_run else None
+        replay=json.loads(replay_path.read_text())['episodes'][0] if replay_path and replay_path.exists() else None
+        reset=evaluation.get('reset',{})
+        row=dict(case=name,seed=case['seed'],requested_cube_xy_m=case['cube_xy_m'],requested_cube_yaw_deg=case['yaw_deg'],
+            measured_reset=reset,independent_stages=evaluation.get('stages',{}),physical_success=evaluation.get('success',False),
+            controller_reported_success=episode.get('full_task_success',False),collision_violations=evaluation.get('collision_violations'),
+            physical_failure=evaluation.get('failure'),controller_failure=episode.get('failure'),failure_phase=episode.get('failure_phase'),
+            failure_category=episode.get('failure_category'),failure_recovery_reset='failure_reset' in episode,
+            failure_recovery_reset_error=episode.get('failure_reset_error'),process_exit_code=finishes[name]['returncode'],
+            task_sim_seconds=evaluation.get('elapsed_s'),runner_seconds_including_reset=episode.get('episode_duration_s'),
+            process_wall_seconds=finishes[name]['wall_s'],episode_wall_seconds=episode.get('episode_wall_s'),
+            planning_wall_seconds_excluding_initial_approach=episode.get('planning_wall_s'),
+            initial_approach_wall_seconds=sum(item['wall_s'] for item in run.get('approach_plan_timings',[])),
+            environment_timing_seconds=episode.get('environment_timing_s'),image_write_wall_seconds=meta.get('image_write_wall_s'),
+            complete_rows=meta.get('frames',0),terminal_partial_ticks=meta.get('incomplete_terminal_ticks'),raw_bytes=size,
+            raw_png_files=sum(path.suffix=='.png' for path in files),source_revision=meta.get('source_revision'),
+            camera_config_sha256=meta.get('camera_config_sha256'),raw_path=str(root) if root else None,
+            automatic_quality_pass=proof.get('automatic_pass',False),quality_reason=proof['reason'],
+            human_accepted=proof.get('accepted',False),recording_evidence=proof.get('evidence'),
+            independent_evaluation=evaluation,replay_tested=replay is not None,
+            replay_physical_success=replay.get('full_task_success') if replay else None,
+            replay_failure=replay.get('failure') if replay else None,
+            replay_independent_evaluation=replay.get('independent_evaluation') if replay else None,
+            replay_report=str(replay_path) if replay else None)
+        if root and meta.get('frames'):
+            row['sampled_visibility_proxy']=sampled_cube_visibility(root,meta['frames'])
+        if replay:
+            replay_seconds=replay['independent_evaluation']['elapsed_s']
+            calls=int(np.ceil((replay_seconds-1e-6)*20))
+            row['replay_policy_calls_inferred_from_physics_time']=calls
+            row['replay_unused_recorded_rows_after_success']=max(0,row['complete_rows']-calls)
+            row['replay_metric_keys_differ_from_recording']=[key for key in evaluation if evaluation[key]!=replay['independent_evaluation'].get(key)]
+        cases.append(row)
+        sheet=os.path.relpath(args.quality_report.parent/(name+'.jpg'),args.output)
+        video=os.path.relpath(args.quality_report.parent/(name+'.mp4'),args.output)
+        selected={'initial':0,**{phase:index for phase,index in proof.get('evidence',{}).get('phase_indices',{}).items()
+            if phase in ('close','hold','right_close','left_release','right_only_hold','bin_release','bin_settle')}}
+        originals=''
+        if root:
+            for phase,index in selected.items():
+                links=' '.join(f'<a href="{html.escape(os.path.relpath(root/camera/f"{index:06d}.png",args.output))}">{camera} PNG</a>' for camera in NAMES)
+                originals+=f'<li>{html.escape(phase)} — frame {index}: {links}</li>'
+            originals='<ul>'+originals+'</ul>'
+        reviews.append(f'<details><summary>{name} — physical {row["physical_success"]}; automatic QA {row["automatic_quality_pass"]}; replay {row["replay_physical_success"] if replay else "not tested"}</summary>'
+            f'<p>Seed {case["seed"]}; cube {case["cube_xy_m"]} m; yaw {case["yaw_deg"]}°. {html.escape(row["quality_reason"])}</p>'
+            f'<video controls preload="none" width="960" src="{html.escape(video)}"></video><p>{originals}</p>'
+            f'<a href="{html.escape(sheet)}">Full phase sheet</a><br><img loading="lazy" width="480" src="{html.escape(sheet)}"></details>')
+    complete=[row for row in cases if row['physical_success']]
+    walls=sum(row['process_wall_seconds'] for row in cases);frames=sum(row['complete_rows'] for row in cases)
+    total_bytes=sum(row['raw_bytes'] for row in cases)
+    size_reference=complete or cases
+    mean_size=float(np.mean([row['raw_bytes'] for row in size_reference]));mean_wall=walls/len(cases)
+    report=dict(schema='so101-physical-pilot-1.0',protocol_status='provisional; not frozen for final collection',
+        protocol_sha256=manifest['protocol_sha256'],camera_config_sha256=CALIBRATION_SHA256,
+        attempted=len(cases),physical_successes=len(complete),physical_success_fraction=len(complete)/len(cases),
+        physically_failed_cases=[row['case'] for row in cases if not row['physical_success']],
+        automatic_quality_passes=sum(row['automatic_quality_pass'] for row in cases),
+        automatic_rejected_cases=[dict(case=row['case'],reason=row['quality_reason']) for row in cases if not row['automatic_quality_pass']],
+        human_accepted=sum(row['human_accepted'] for row in cases),human_review_pending=[row['case'] for row in cases if row['automatic_quality_pass'] and not row['human_accepted']],
+        failure_breakdown=dict(Counter(row['failure_category'] or row['physical_failure'] or 'unclassified' for row in cases if not row['physical_success'])),
+        collisions=sum(row['collision_violations'] or 0 for row in cases),failure_recovery_resets=sum(row['failure_recovery_reset'] for row in cases),
+        replay_tested=sum(row['replay_tested'] for row in cases),replay_physical_successes=sum(row['replay_physical_success'] is True for row in cases),
+        replay_not_tested=[row['case'] for row in cases if not row['replay_tested']],
+        replay_limit='Shared 20 Hz interface stops at independent success and can omit the recording final settling tail; final target may dwell up to 3 s if exhausted; pointwise state equivalence not measured',
+        total_process_wall_seconds=walls,total_sim_task_seconds=sum(row['task_sim_seconds'] or 0 for row in cases),
+        sim_task_seconds=dict(mean=float(np.mean([row['task_sim_seconds'] for row in complete])),minimum=min(row['task_sim_seconds'] for row in complete),maximum=max(row['task_sim_seconds'] for row in complete)) if complete else None,
+        complete_policy_rows=frames,paired_rgb_frames=frames*3,raw_bytes=total_bytes,
+        wall_policy_rows_per_second=frames/walls,wall_demonstrations_per_hour=len(cases)*3600/walls,
+        temporal_fps=20,physics_hz=60,mean_raw_bytes_per_completed_demo=mean_size,
+        synchronization=dict(automatically_validated_attempts=sum(row['automatic_quality_pass'] for row in cases),
+            complete_paired_rows=frames,paired_rgb_frames=frames*3,
+            terminal_partial_captures_excluded_from_rows=sum(bool(row['terminal_partial_ticks']) for row in cases),
+            contract='Pre-action RGB/state at same simulation tick; monotonic camera IDs; 3 identical 60 Hz targets per 20 Hz row; measured wrist attachment checked',
+            limit='Software simulation synchronization, not independently measured hardware exposure timing'),
+        storage_estimates=[dict(demonstrations=n,raw_bytes=round(mean_size*n),observed_min_bytes=min(row['raw_bytes'] for row in size_reference)*n,
+            observed_max_bytes=max(row['raw_bytes'] for row in size_reference)*n,generation_hours=mean_wall*n/3600) for n in (100,500,1000)],
+        storage_limit='Raw lossless PNG + metadata only; estimates conditional on this narrow support, not converted copies/weights/review media',
+        no_further_collection_or_training_authorized=True,cases=cases)
+    write_json(args.output/'pilot_report.json',report)
+    columns=('case','seed','requested_cube_xy_m','requested_cube_yaw_deg','physical_success','collision_violations','task_sim_seconds','process_wall_seconds','complete_rows','raw_bytes','automatic_quality_pass','quality_reason','replay_tested','replay_physical_success','replay_failure')
+    with (args.output/'pilot_cases.csv').open('w',newline='') as stream:
+        writer=csv.DictWriter(stream,fieldnames=columns,extrasaction='ignore');writer.writeheader();writer.writerows(cases)
+    page='<!doctype html><meta charset="utf-8"><title>SO-101 pilot review</title><style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:12px}summary{cursor:pointer;padding:12px;background:#eee;margin-top:8px}video,img{max-width:100%;height:auto}a{margin-right:12px}</style>'
+    page+=f'<h1>12-attempt SO-101 pilot</h1><p>Physical success: {len(complete)}/{len(cases)}. Automatic QA: {report["automatic_quality_passes"]}/{len(cases)}. Human accepted: {report["human_accepted"]}. Physical replays: {report["replay_physical_successes"]}/{report["replay_tested"]} tested.</p>'
+    page+='<p>Review all three synchronized streams, especially cube/gripper detail at grasp, handover and release. Initial wrist views do not see the cube; use overhead. Red-pixel ROI measurements are diagnostic proxies, not segmentation or visual approval. Videos use complete paired rows at 20 Hz; terminal partial captures are excluded.</p><p><a href="pilot_report.json">Machine-readable report</a><a href="pilot_cases.csv">Per-case CSV</a></p>'
+    page+=''.join(reviews)
+    (args.output/'index.html').write_text(page)
+    print(json.dumps({key:value for key,value in report.items() if key!='cases'},indent=2))
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--protocol',type=Path,default=DEFAULT_PROTOCOL)
@@ -358,6 +513,10 @@ def main():
     p.add_argument('--raw',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--human-review',type=Path);p.add_argument('--ledger',type=Path)
     p.add_argument('--review-video',action='store_true');p.set_defaults(function=validate)
+    p=commands.add_parser('pilot-report',help='Join completed physical, recording, storage and replay evidence; no acceptance or collection')
+    p.add_argument('--manifest',type=Path,required=True);p.add_argument('--run',type=Path,required=True)
+    p.add_argument('--quality-report',type=Path,required=True);p.add_argument('--replay-run',type=Path)
+    p.add_argument('--output',type=Path,required=True);p.set_defaults(function=pilot_report)
     args=parser.parse_args();args.function(args)
 
 

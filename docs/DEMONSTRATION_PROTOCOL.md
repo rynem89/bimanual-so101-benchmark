@@ -1,8 +1,10 @@
 # Proposed demonstration and evaluation protocol
 
-**Decision requested: approve/revise this protocol, then separately authorize the
-12-attempt pilot. Neither approval nor collection has happened. No training is
-authorized.** The camera arrangement alone was approved on 2026-10-23.
+**Current gate:** the user provisionally accepted this protocol for the 12-attempt
+pilot only. That pilot is complete; see [actual results](PILOT_RESULTS.md).
+The protocol is not frozen for final collection. All further collection,
+augmentation and training remain paused for user review. The following is the
+proposed method and generation procedure; existing pilot output paths are occupied.
 
 ## Research basis and scope
 

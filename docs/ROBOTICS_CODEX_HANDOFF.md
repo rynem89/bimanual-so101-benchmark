@@ -1,10 +1,12 @@
 # Project handoff — Simulation-first bimanual SO-101
 Updated 2026-10-23. Verify local files and current Git state before acting.
 
-**Current learning gate:** `feat/il-camera-dataset-v2`. Centered overhead and both
-wrist cameras approved and frozen; demonstration protocol proposed, not approved.
-No collection, training or remote push authorized. See the final dated section
-“Camera freeze and demonstration protocol pipeline” for current commands/results.
+**Current learning gate:** `feat/il-camera-dataset-v2`. Approved cameras frozen.
+The user authorized only the 12-attempt pilot: all 12 have now completed physically
+and passed automated QA; 3 selected physical action replays also passed. Stop for
+human review. No further collection, augmentation, training or remote push.
+Protocol remains provisional, not frozen. See `docs/PILOT_RESULTS.md` and the final
+dated section below for current evidence and exact local artifact paths.
 The older branch/state paragraph below is historical deterministic-reference evidence.
 
 **Latest maintained state:** branch `feat/fingertip-geometry-calibration`;
@@ -2166,3 +2168,144 @@ unproven. A future separate-root offline policy-loss CLI is explicitly not yet
 implemented; proposed primary uses fixed100k final checkpoint and independent
 physical validation. Internal LeRobot eval_split is disabled in that proposal to
 avoid mixing root statistics with separate validation data. No VLA chosen/downloaded.
+
+## 2026-10-23 — Authorized physical pilot completed; stop for review
+
+User provisionally accepted the protocol for testing and explicitly authorized
+only all12 pilot attempts plus action replay/quality measurement. Final collection,
+augmentation and training were excluded. The authorization record binds the pilot
+manifest, camera and protocol hashes at outputs/protocol_v1_pilot_run/approval.json.
+It must not authorize another batch. All12 attempts were run once, in order, with
+actual PhysX and the unchanged existing expert; no replacements/retries.
+
+Collection and all three replay tests ran on clean committed source877f9b1,
+branch feat/il-camera-dataset-v2, GUI visible, cpu-threads8, BLAS/OMP1. Each terminal
+explicitly activated leisaac-sim and set LEISAAC_ASSETS_ROOT. No installs/driver/OS,
+physics, model, planner, expert, gains or camera parameter changes. Cameras remain
+SHA256 f8f7e56842602fbe040fea43b1cf1a51f75f56b3ad28357aae04f717c8e9fcbc;
+protocol JSON remains9ec7c3539c287e11bdc988eb52597a16001404d81ef43f8aad64fd0c6a4a3b3a.
+
+Exact collection command after activation:
+
+```bash
+python scripts/demonstration_pipeline.py collect \
+  --manifest outputs/demonstration_protocol_v1/pilot.json \
+  --raw datasets/protocol_v1_pilot --output outputs/protocol_v1_pilot_run \
+  --approval outputs/protocol_v1_pilot_run/approval.json \
+  --execute --authorize-collection
+```
+
+The launcher emitted one existing run_manipulation.py process per case with
+--stage full --motion-mode continuous --expert-hz20 --grip-feedback-from-lift,
+--overview-profile centered, its single-case manifest, --record-dir,
+--authorize-recording and --exit-after. It did not use --headless. Actual argv,
+seeds, starts, return codes and process wall time are in attempts.jsonl. Each run
+has an immutable full_*.json report plus simulation.json and a log. CPU plan
+feasibility from the prior milestone was never counted as physical completion.
+
+**Results:**12/12 independent pickup/lift/handover/placement successes;12/12
+process exits0; zero forbidden-contact violations (0.05N threshold), no reported
+drop/grasp/controller/evaluator failure and no failure-recovery reset. All cases
+have actual reset position/quaternion and source/config hashes. Peak speed2.4415
+rad/s, effort1.5271Nm and stable-grasp slip1.1648mm. The new nominal metrics AND
+complete transfer trace exactly equal the preserved camera-regression reference
+outputs/controller/overview_v3_comparison/full_20261023T142830953036Z.json.
+
+Actual task durations: mean149.1472s, range138.0333..160.1000s excluding reset.
+Process wall sum7905.2184s (2.1959h), mean658.7682s, range582.4607..697.9781s.
+35,792 complete 20Hz rows /107,376 paired RGB frames. Six final partial holds
+(10 physical ticks total) are diagnostic, excluded from complete rows;107,394
+PNGs exist including18 terminal diagnostic images. Raw logical bytes11,222,342,915
+(11.222GB), mean935,195,243 bytes per demonstration. Actual wall throughput4.5276
+policy rows/s,5.4647 demos/hour, distinct from the simulated temporal20Hz rate.
+Image write timers2596.22s, viewport rendering1861.84s, camera869.86s, physics457.76s,
+planning including approach1663.53s. Reset overlaps stepping timers; do not sum all
+categories. One read-only37.75s first-case audit overlapped the second collection
+case; later batch QA overlapped replay only. Timings describe the observed workflow,
+not an isolated hardware microbenchmark. Planning is not the only throughput cost.
+
+Automated QA command (no human approval supplied):
+
+```bash
+python scripts/demonstration_pipeline.py validate \
+  --manifest outputs/demonstration_protocol_v1/pilot.json \
+  --raw datasets/protocol_v1_pilot --output outputs/protocol_v1_pilot_qa \
+  --ledger outputs/protocol_v1_pilot_run/attempts.jsonl --review-video
+```
+
+12/12 automatic QA passes, zero automatic rejections, complete ledger,0 human
+accepted, ready_for_conversion=false. It decoded all complete paired RGB rows,
+checked finite float32 state/actions, authored limits, absolute/relative clock,
+exact repeated3-tick targets, all3 sensor IDs, frozen K/pose, measured wrist-parent
+attachment and required task phases. Human review remains pending for all12;
+never change those flags from code tests or an AI image inspection. The sampled
+projected-cube ROI colour diagnostic is not certified segmentation, contact or
+continuous visibility. All96 sampled phases have >=12px cube-red proxy width in
+at least one view; initial wrists see no cube, overview has partial occlusion.
+
+Physical replay was preselected and logged BEFORE execution: pilot_000 corner,
+pilot_008 nominal, pilot_009 minus1degree. Original raw actions were passed through
+BenchmarkEnv.step (the policy20Hz/3-tick interface), same reset/actuators/gravity
+compensation/independent evaluator; no expert IK/RRT/contact servo and no new expert
+recordings. For each case the exact command is in
+outputs/protocol_v1_pilot_replay/attempts.jsonl. Pattern:
+
+```text
+python scripts/run_manipulation.py --cpu-threads 8 --stage full \
+  --motion-mode continuous --expert-hz 20 \
+  --cases-file outputs/protocol_v1_pilot_run/cases/<case>.json \
+  --replay <that-case-raw-directory> \
+  --output-dir outputs/protocol_v1_pilot_replay/<case> --exit-after
+```
+
+3/3 actual physical successes, exits0. Replay sim durations157.2667/150.3500/135.2s;
+process walls228.5/218.5/197.5s. The intended interface ends at first independent
+success, omitting56 final recorded settling-tail rows in each selected case.
+Do not claim every stored row or pointwise state equivalence was replayed. Aggregate
+metrics differ only in elapsed time and desired-target tracking (float32 recorded
+targets versus original higher-precision desired-pose calculation); slip, speed,
+effort, stage outcomes and contacts match. Nine other recordings were not physically
+replayed. Do not present format validation as physical replay success.
+
+A reusable pilot-report subcommand was added only AFTER all physics tests finished.
+It joins the actual ledger/reports/QA/replay evidence, rechecks full raw byte digests,
+samples camera visibility and emits JSON/CSV plus a consolidated HTML review with
+videos, sheets and full-resolution PNG links. It cannot collect, train or grant
+human acceptance. See exact rebuild command in docs/PILOT_RESULTS.md. Outputs:
+
+- outputs/protocol_v1_pilot_report/index.html — consolidated user review.
+- outputs/protocol_v1_pilot_report/pilot_report.json, pilot_cases.csv — full per-case
+  poses/seeds, stage/failure/reset evidence, durations/bytes, QA and replay results.
+- outputs/protocol_v1_pilot_qa/quality.json, human_review_template.json,12 phase
+  sheets and12 synchronized20Hz videos. Original PNGs remain in raw folders.
+- docs/PILOT_RESULTS.md — curated measured results, storage table, limitations and
+  next-size recommendation; README provides review/rebuild/visible replay commands.
+
+Raw size projections:100=93.52GB,500=467.60GB,1000=935.20GB; these exclude converted
+copies/weights/media. Measured GUI generation projections18.30/91.50/182.99hours.
+Recommend retaining tested primary x[-.350,-.330],y[-.052,-.044]m,yaw+-6degrees,
+fixed HOME, and considering100train/20validation only AFTER human acceptance and
+separate authorization. Expected120raw~112.22GB,~21.96h generation before QA/human
+review. Do not widen/narrow ranges, use the pilot for training, infer broad success
+probability from boundary selection, or jump to500/1000 before a useful baseline.
+
+All45 CPU tests passed in72.465s after report support was added. Report counts,
+local links and raw totals were additionally checked against actual evidence.
+One auxiliary NumPy inspection command in a fresh system shell lacked Conda;
+reran its inspection using stdlib/activated Python, with no data/state changes.
+No simulator or dataset test was repaired by installing/upgrading anything.
+
+**STOP for user review.** No further collection, augmentation, official conversion
+into an accepted training corpus, optimizer update, model creation or remote push.
+The12 authorized expert attempts are consumed. Checkpoints remain empty. Raw pilot
+is intentionally retained locally and ignored by Git. No user file/dataset was
+deleted. Keep the approved camera file and provisional protocol JSON unchanged.
+
+Final report verification: outputs/protocol_v1_pilot_report/report_verification.json
+and source_preservation.json. All12 run evaluations match hash-bound raw episode
+evaluations; all18 terminal diagnostic PNGs decoded; all35798 camera captures have
+matching three-camera frame-counter values; all326 local HTML links exist; no
+checkpoint files. All control/scene/camera/protocol source files are byte-identical
+to877f9b1. Six focused protocol tests passed again in2.423s after final reporting
+cleanup; python compile and git diff --check passed. Only reporting code and docs
+changed after the physics runs. A new local milestone commit follows; no push.

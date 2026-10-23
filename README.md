@@ -12,21 +12,26 @@ The user approved the centered overhead camera and both wrist cameras on
 2026-10-23. They are now frozen in [configs/policy_cameras.json](configs/policy_cameras.json),
 and `centered` is the default. No further camera optimization is planned.
 
-The next deliverable is the proposed demonstration-generation and QA pipeline:
+The **12-attempt pilot is complete**: **12/12 independent physical task successes,
+12/12 automated recording-QA passes, zero automatic rejections**. All 12 are
+pending your human visual review. Three preselected recordings (corner, nominal,
+−1° yaw) also completed the task through physical action replay; the other nine
+were not physically replayed. No policy was trained.
 
-- **12 pilot attempts**, including range corners and known nominal poses; human review before scaling.
-- **100 train / 20 validation** attempted demonstrations with fresh fixed manifests.
-- **100 held-out + 20 stress** evaluation-only cases, excluded from training.
-- Full-file RGB, synchronization, measured attachment and physical-outcome checks;
-  every failure stays counted. Human acceptance is bound to raw file hashes.
-- Official LeRobot conversion requires accepted QA. No custom optimizer loop.
+Start with [the consolidated visual review](outputs/protocol_v1_pilot_report/index.html),
+then [the measured results and recommendation](docs/PILOT_RESULTS.md).
+The [machine-readable report](outputs/protocol_v1_pilot_report/pilot_report.json)
+and [case CSV](outputs/protocol_v1_pilot_report/pilot_cases.csv) contain all seeds,
+poses, stage outcomes, failures/reset evidence, timing, sizes, QA and replay results.
+Raw recordings are in `datasets/protocol_v1_pilot/`.
 
-Read [the complete protocol and executable procedure](docs/DEMONSTRATION_PROTOCOL.md)
-for research, exact ranges, acceptance criteria, training comparison, time/storage
-estimates and limitations. Machine-readable proposal:
+The protocol is **provisionally accepted for this pilot, not frozen for final
+collection**. All 12 authorized attempts have been consumed. Final collection,
+augmentation and training remain paused for your review. Proposed next scale is
+100 train /20 validation attempts in the same tested ranges, only after separate
+authorization. Research and procedure remain in
+[the protocol](docs/DEMONSTRATION_PROTOCOL.md), with machine-readable settings in
 [configs/demonstration_protocol.json](configs/demonstration_protocol.json).
-**Protocol approval and session collection authorization are still pending.
-No demonstrations were collected and no training was run for this milestone.**
 
 Work is local on `feat/il-camera-dataset-v2`. Main and GitHub are untouched;
 remote push is not authorized for this assignment. Preserved expert reference:
@@ -95,7 +100,7 @@ recording QA requires the approved centered profile.
 The expert uses bounded SciPy TRF least-squares IK on **five arm joints** to find
 reachable TCP positions/orientations. `so101_planning.py` checks intermediate robot,
 scene and carried-cube geometry, with existing RRT recovery where needed.
-Continuous motion follows the existing timed joint paths; the quintic blend
+Continuous motion interpolates joint waypoints with a clamped cubic spline; the quintic blend
 `10u³−15u⁴+6u⁵` provides smooth endpoint timing, and geometric/path checks remain
 necessary between endpoints. Grasp/handover feedback uses measured finger forces
 and actual cube motion, not an attachment or task-time teleport. Details and
@@ -151,20 +156,42 @@ rotation-matrix elements within 2e-4. Camera changes require a new reviewed vers
 
 ## Plan, collect, review and convert demonstrations
 
-Only planning is authorized now. In `leisaac-sim`, choose a fresh output directory:
+The pilot used the existing expert, one process per declared case, with the GUI
+visible. Full attempt commands, authorization, start/finish ledger and logs are
+under `outputs/protocol_v1_pilot_run/`; QA, review templates, videos and phase
+sheets are under `outputs/protocol_v1_pilot_qa/`. No failed case was regenerated.
+The complete [generation and QA procedure](docs/DEMONSTRATION_PROTOCOL.md#executable-workflow)
+remains available for a later authorized session; existing pilot paths are occupied.
+
+To rebuild the consolidated report without collecting or training, activate
+`leisaac-sim` and choose a fresh output folder:
 
 ```bash
-python scripts/demonstration_pipeline.py plan --output outputs/demonstration_protocol_v1
-python scripts/demonstration_pipeline.py collect \
+python scripts/demonstration_pipeline.py pilot-report \
   --manifest outputs/demonstration_protocol_v1/pilot.json \
-  --raw datasets/protocol_v1_pilot --output outputs/protocol_v1_pilot_run
+  --run outputs/protocol_v1_pilot_run \
+  --quality-report outputs/protocol_v1_pilot_qa/quality.json \
+  --replay-run outputs/protocol_v1_pilot_replay \
+  --output outputs/protocol_v1_pilot_report_rebuilt
 ```
 
-`collect` above is a **dry run**. It prints the proposed expert launches. Execution
-requires protocol approval, a hashed approval record and explicit session flag.
-The full [collection/QA procedure](docs/DEMONSTRATION_PROTOCOL.md#executable-workflow)
-explains approval fields, the attempt ledger, interrupted-run accounting, video
-review and final collection gates. GUI remains default; headless must be explicit.
+To see the recorded nominal actions run through real simulation, in
+`leisaac-sim` use:
+
+```bash
+python scripts/run_manipulation.py --cpu-threads 8 --stage full \
+  --motion-mode continuous --expert-hz 20 \
+  --cases-file outputs/protocol_v1_pilot_run/cases/pilot_008.json \
+  --replay datasets/protocol_v1_pilot/pilot_008_20261023T171324135324Z \
+  --output-dir outputs/controller/manual_pilot_nominal_replay
+```
+
+The GUI remains open at `[VIEWER]` after success. This is recorded-action replay,
+not learned-model inference. It submits joint targets through the same policy
+interface and stops at independent success; it may omit the recording's final
+settling tail. The pilot's three physical replay tests all passed, while pointwise
+state-trajectory equivalence was not measured. Full results and limitations are in
+[the pilot report](docs/PILOT_RESULTS.md#recording-format-versus-physical-replay).
 
 After separately authorized collection and human data acceptance, convert in
 `so101-il-py312`:
@@ -231,20 +258,24 @@ synchronized frames with continuous sensor IDs and correct wrist attachments.
 Report: `outputs/controller/overview_v3_comparison/full_20261023T142830953036Z.json`.
 These are existing physical results, not new varied-demonstration evidence.
 
-The new pipeline is checked with synthetic files and CPU regressions. Such tests
-verify gates, chronology, corruption rejection and official dataset compatibility;
-they cannot prove camera observability or grasp success. Real collection throughput,
-varied expert reliability, pilot acceptance and learning performance are still
-unmeasured. Exact current commands/results and implementation limitations are in
-[the engineering handoff](docs/ROBOTICS_CODEX_HANDOFF.md), leaving this README as
-a procedure and code map.
+Current measured evidence is in [the pilot results](docs/PILOT_RESULTS.md).
+All 12 actual physics episodes and all three selected physical replays succeeded;
+all 45 CPU tests passed in 72.465 s. The new nominal episode exactly matches the
+preserved reference's independent metrics and complete transfer trace. Expert
+motion, planner, model, scene and shared physics files were not changed.
 
-Current verification: **45/45 CPU tests passed (71.810 s)**; **12/12 pilot approach
-geometry plans safe (137.771 s total)**; GPU reset/camera interface diagnostic passed
-(9.046 s); official ACT/Diffusion readers loaded two synthetic episodes /16 frames
-with 64-target sequences and terminal padding. No model or optimizer was created.
-`datasets/` and `checkpoints/` remain empty. These checks do not establish varied
-physical success. See the handoff for exact commands and initial failures/fixes.
+The 12 raw demonstrations contain 35,792 complete 20 Hz rows /107,376 paired RGB
+frames and occupy 11.22 GB. Mean task duration is 149.15 s simulated; mean process
+wall time is 658.77 s, with 4.53 recorded rows/s wall throughput. All complete rows
+passed camera/state/action synchronization and attachment checks. Final partial
+physics holds remain diagnostic and are excluded from complete rows. Original
+lossless PNGs are preserved; review videos are separate derivatives.
+
+Human image/motion acceptance is pending. Sampled cube-colour ROI checks are
+visibility proxies, not certified segmentation or contact evidence. Cameras and
+protocol settings stay unchanged; broader-distribution reliability, accepted final
+training data and learned-policy success remain unproven. `checkpoints/` is empty.
+No final collection, augmentation, training or remote push was performed.
 
 ## What each file does
 
@@ -256,10 +287,11 @@ training command.
 
 | File | Responsibility and inputs → outputs | How it is used |
 | --- | --- | --- |
-| [scripts/demonstration_pipeline.py](scripts/demonstration_pipeline.py) | Proposed protocol → fixed split manifests; offline approach geometry; guarded expert launches → attempt ledger; raw files → exhaustive QA, review media and hash-bound acceptance | Simulation env: `plan`, `preflight`, dry-run `collect`, `validate`; real collection awaits approval |
+| [scripts/demonstration_pipeline.py](scripts/demonstration_pipeline.py) | Protocol → fixed manifests; guarded expert launches → ledger; raw files → QA/review; measured evidence → JSON/CSV/HTML pilot report and visibility samples | Simulation env: `plan`, `preflight`, `collect`, `validate`, `pilot-report`; no more collection authorized |
 | [configs/demonstration_protocol.json](configs/demonstration_protocol.json) | Versioned counts, pose support, seeds, QA limits and proposed training conditions | Proposed; reviewed before collection; no optimizer execution |
 | [configs/policy_cameras.json](configs/policy_cameras.json) | Approved camera extrinsics, optics, resolution, FPS and provenance | Frozen source for default cameras; changes require review |
 | [tests/test_demonstration_pipeline.py](tests/test_demonstration_pipeline.py) | Synthetic on-disk episodes → approval, corruption, attachment, clock, review-hash and denominator assertions | CPU unittest; synthetic flags are not physical evidence |
+| [docs/PILOT_RESULTS.md](docs/PILOT_RESULTS.md) | Actual 12-attempt physical/QA/replay results, timings, storage projections and next-size recommendation | User review; no final collection/training approval |
 | [docs/DEMONSTRATION_PROTOCOL.md](docs/DEMONSTRATION_PROTOCOL.md) | Research and explicit dataset/training/evaluation proposal, commands, estimates and unresolved gates | Main document for protocol approval |
 | [scripts/policy_cameras.py](scripts/policy_cameras.py) | Camera profiles, optical transforms, continuity checks, comparison sheets and diagnostic video | Used by `--camera-preview`; no training records |
 | [tests/test_policy_cameras.py](tests/test_policy_cameras.py) | Optical axes, attachment, RGB, reset-relative clock and continuous-frame rejection tests | CPU unittest |
