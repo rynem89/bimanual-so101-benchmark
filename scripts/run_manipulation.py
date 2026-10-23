@@ -39,6 +39,9 @@ parser.add_argument('--grip-feedback-from-lift',action='store_true',help='Apply 
 parser.add_argument('--cases-file',type=Path,help='Explicit named cube cases and split; all cases are attempted')
 parser.add_argument('--split',choices=('train','validation','heldout'),default='train')
 parser.add_argument('--policy-socket',type=Path,help='20 Hz learned policy in the isolated Python 3.12 environment')
+parser.add_argument('--diagnostic-front',action='store_true',help='Extra fixed front preview only; excluded from policy observations')
+parser.add_argument('--camera-preview',type=Path,help='Save policy camera phase snapshots; never demonstrations')
+parser.add_argument('--authorize-recording',action='store_true',help='Use only after explicit camera approval and collection authorization')
 parser.add_argument('--replay',type=Path,help='Replay raw 20 Hz commands through the shared physics/evaluator')
 if '--help' in sys.argv or '-h' in sys.argv:
     parser.print_help()
@@ -46,7 +49,9 @@ if '--help' in sys.argv or '-h' in sys.argv:
           'See: python scripts/inspect_task_layout.py --help')
     raise SystemExit(0)
 options, rest = parser.parse_known_args()
-if options.record_dir or options.policy_socket:
+if options.record_dir and not options.authorize_recording:parser.error('Recording requires camera approval and explicit --authorize-recording')
+if options.camera_preview and (options.record_dir or options.policy_socket or options.replay):parser.error('Camera preview is expert-only and cannot record demonstrations')
+if options.record_dir or options.policy_socket or options.camera_preview:
     options.expert_hz=20
     if '--enable_cameras' not in rest:rest.append('--enable_cameras')
 sys.argv=[sys.argv[0],*rest]
@@ -103,6 +108,10 @@ class Episode:
         self.tick=0
         self.baseline=None
         self.contact_allowed=False
+        self.camera_audit=None
+        if options.camera_preview:
+            from policy_cameras import CameraAudit
+            self.camera_audit=CameraAudit(options.camera_preview)
         self.phase='reset'
         self.failure_state=None
         self.max_tracking_m=0.
@@ -238,6 +247,7 @@ class Episode:
         if options.expert_hz==20:
             if policy_boundary(self.env.total_steps,self.env.policy_origin_step):
                 self.held_action=action.copy()
+                if self.camera_audit:self.camera_audit.capture(self.env,self.phase)
                 if self.writer:
                     self.writer.begin(self.env.frame,self.env.capture_images(),self.held_action)
             if self.held_action is None:raise RuntimeError('Expert policy clock must start after reset')
@@ -375,11 +385,12 @@ class Episode:
                 'reset_fk':self.reset(),'pickup_success':False,'lift_success':False,'handover_success':False,
                 'placement_success':False,'full_task_success':False}
         self.result=result
+        if self.camera_audit:self.camera_audit.capture(self.env,'initial',force=True)
         if options.record_dir and options.stage!='model':
             from dataset_io import EpisodeWriter
             root=options.record_dir/f'{self.case}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")}'
             self.writer=EpisodeWriter(root,dict(case=self.case,configuration=EVALUATION_CASES[self.case],
-                cameras=self.env.camera_metadata(),image_shape=[224,224,3],motion_mode=options.motion_mode,split=self.split,
+                cameras=self.env.camera_metadata(),image_shape=[480,640,3],motion_mode=options.motion_mode,split=self.split,
                 source_revision=self.source_revision,tracked_source_dirty=self.source_dirty,
                 source_sha256=self.source_sha256,
                 physics_hz=60,expert_command_hz=20,controller='privileged geometric expert',
@@ -774,7 +785,7 @@ def main():
     started=time.perf_counter();calibration=calibrate(model)
     calibration_s=time.perf_counter()-started
     run_id=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-    sources=('run_manipulation.py','so101_model.py','so101_planning.py','benchmark_core.py','benchmark_env.py','inspect_task_layout.py','dataset_io.py')
+    sources=('run_manipulation.py','so101_model.py','so101_planning.py','benchmark_core.py','benchmark_env.py','inspect_task_layout.py','dataset_io.py','policy_cameras.py')
     report={'stage':options.stage,'suite':options.suite,'requested_episodes_per_case':options.episodes,
             'requested_episodes':options.episodes*len(cases),'run_id':run_id,'headless':layout.args.headless,
             'handover_mode':options.handover_mode,'source_revision':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
@@ -803,7 +814,7 @@ def main():
     save()
     sim=layout.SimulationContext(layout.sim_utils.SimulationCfg(device=layout.args.device))
     cfg=layout.BimanualSceneCfg(num_envs=1,env_spacing=2.)
-    if options.record_dir or options.policy_socket:configure_cameras(cfg)
+    if options.record_dir or options.policy_socket or options.camera_preview:configure_cameras(cfg,diagnostic_front=options.diagnostic_front)
     cfg.left_arm.init_state.pos=layout.LEFT_BASE_M;cfg.right_arm.init_state.pos=layout.RIGHT_BASE_M
     cfg.left_arm.spawn.activate_contact_sensors=True;cfg.right_arm.spawn.activate_contact_sensors=True
     cfg.cube.spawn.activate_contact_sensors=True

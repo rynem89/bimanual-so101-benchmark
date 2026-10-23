@@ -1,120 +1,31 @@
-# Bimanual SO-101: user guide
+# Bimanual SO-101: deterministic expert and camera-gated learning
 
-This repository contains a scripted controller and an imitation-learning pipeline
-for one task: **left arm picks up a 40 mm cube → transfers it to the right arm →
-right arm releases it into the basket → both arms return home**.
+The engineering objective is a reproducible benchmark: left SO-101 picks a 40 mm
+cube, transfers it in mid-air to the right arm, and the right arm releases it into
+a basket. The validated geometric expert is preserved. Learning is being reset;
+there are currently **no demonstration datasets or model checkpoints**.
 
-The scripted controller has completed this task in Isaac Sim. The ACT and
-Diffusion checkpoints have **not** demonstrated successful manipulation. They are
-small diagnostic training runs, not finished policies. Training, camera changes
-and visual evaluation are now left to the user. This documentation update runs
-none of them.
+## Current boundaries
 
-## Start here
+- Work branch: `feat/il-camera-dataset-v2`; preserved reference tag:
+  `reference/pre-il-camera-v2` at `f47c358`. Main and remote branches are untouched.
+- The historical expert completed the task, including the visually verified
+  minus-one-degree recovery at `fb408f5`. Existing physical success criteria remain.
+- Camera v2 passed automated attachment/timing checks and one full nominal
+  physics regression; human approval of this initial simulation calibration is pending. Do not collect demonstrations or train before that approval.
+- All old learning artifacts in `datasets/` and `checkpoints/` were deleted with
+  user authorization. Exact inventory and sizes are in the engineering handoff.
+  Output evidence and old policy traces were retained; deletion of traces is only
+  proposed. Old commands/weights in POLICY_REVIEW.md are historical.
 
-- [What was implemented and what trained the models](#what-was-implemented-and-what-trained-the-models)
-- [Why two Python environments are used](#why-two-python-environments-are-used)
-- [Cameras and the data-quality problem](#cameras-and-the-data-quality-problem)
-- [Collect, inspect and convert demonstrations](#collect-inspect-and-convert-demonstrations)
-- [Train ACT or Diffusion yourself](#train-act-or-diffusion-yourself)
-- [View the trained models in Isaac Sim](#view-the-trained-models-in-isaac-sim)
-- [What each file does](#what-each-file-does)
-- [Detailed policy design and independent review](docs/POLICY_REVIEW.md)
+The previous four-demo ACT/Diffusion runs failed. Poor image visibility, limited
+coverage and differences in the custom training recipe remain concerns; the
+experiments do not isolate a single cause. Historical configuration/statistics
+remain in [the review](docs/POLICY_REVIEW.md) and its metadata snapshot.
 
-The detailed review explains the choices, limitations, actual optimizer behavior
-and exact demonstration provenance. [Review metadata](docs/POLICY_REVIEW_METADATA.json)
-contains the saved configurations, dataset statistics, file hashes and training
-arguments for inspection on GitHub. It is a documentation snapshot, not an input
-to the trainer. Historical experiments remain in the
-[engineering handoff](docs/ROBOTICS_CODEX_HANDOFF.md) and the
-[previous README](https://github.com/rynem89/bimanual-so101-benchmark/blob/d1cb3befa15533cf177c7178814b8e000cd64162/README.md).
+## Environments
 
-## What was implemented and what trained the models
-
-There are three distinct operations:
-
-1. **Expert control:** geometry, inverse kinematics, collision checks and contact
-   feedback produce joint targets. This is ordinary programmed control.
-2. **Training:** a neural network learns to predict those targets from recorded
-   images and joint states. This is supervised imitation learning; no rewards,
-   reinforcement learning or human teleoperation were used.
-3. **Inference:** the trained network produces joint targets in the simulator.
-   It does not call the expert planner or its gripper-contact feedback.
-
-```text
-Scripted expert → Isaac Sim → RGB + measured joints + commanded joint targets
-                                       ↓
-                             raw demonstration folders
-                                       ↓ convert
-                              LeRobot image dataset
-                                       ↓ train
-                             ACT / Diffusion checkpoint
-                                       ↓ serve over local socket
-                          Isaac Sim + independent evaluator
-```
-
-I implemented the scene integration, calibrated geometry/TCP, constrained IK,
-collision-aware task planning, reset/evaluation, synchronized recorder and the
-LeRobot conversion/training/inference adapter. ACT's transformer and Diffusion's
-U-Net are imported from **LeRobot 0.6.1**, not implemented in this repository.
-The training loop around them is custom; it is not the official LeRobot trainer.
-
-**Both latest checkpoints trained on exactly these four successful scripted
-expert episodes**, recorded at 20 Hz using continuous expert motion and contact
-feedback from lift onward:
-
-| Demonstration | Initial cube X, Y (world metres) | Yaw (degrees) | Seed | Frames |
-| --- | --- | ---: | ---: | ---: |
-| `train_v2_000` | −0.3481787, −0.0442980 | 0.32610 | 811000 | 3,042 |
-| `train_v2_001` | −0.3414638, −0.0443834 | 4.56665 | 811001 | 2,920 |
-| `train_v2_002` | −0.3492046, −0.0453542 | −4.81371 | 811002 | 3,073 |
-| `train_v2_003` | −0.3433775, −0.0481709 | 0.96305 | 811003 | 2,951 |
-
-Total: **11,986 frames / 599.3 seconds**, converted into
-`datasets/lerobot_corrected_train4`. These are four long trajectories, not 11,986
-independent demonstrations. Exact timestamped raw directories and historical
-source versions are in [the review](docs/POLICY_REVIEW.md#exact-demonstration-provenance).
-
-There are now twelve successful raw training recordings and two validation
-recordings locally. The extra eight training recordings and both validation
-recordings were **not used** in the latest weights or their normalization.
-Earlier one-episode/20-update and two-episode/1,000-update runs are separately
-identified in the review. The twelve-episode collection is not a trained model.
-
-| Existing model | Directory to pass to `serve --checkpoint` | Training |
-| --- | --- | --- |
-| ACT | `checkpoints/act_corrected_train4_4000/pretrained_model` | Four episodes; 4,000 updates |
-| Diffusion | `checkpoints/diffusion_corrected_train4_4000/pretrained_model` | Same four episodes; 4,000 updates |
-
-Both used ImageNet-pretrained ResNet18 visual encoders; their manipulation
-policies were trained locally. Latest completed evaluations were ACT **0/4**
-(timeouts) and Diffusion **0/5** (actuator/contact failures), with one further ACT
-attempt interrupted. Those outcomes do not isolate the cause of failure.
-
-## Why two Python environments are used
-
-These are **two software environments, not two Python models**. Both ACT and
-Diffusion run in the same training environment. Only inference needs both
-processes running together; offline training does not require a running simulator.
-
-| Environment | Python / key packages | Used for |
-| --- | --- | --- |
-| `leisaac-sim` | Python 3.11.16; NumPy 1.26.0; torch 2.7.0+cu128; Isaac Sim 5.1 / Isaac Lab 2.3 / LeIsaac 0.4 | Expert playback, recording, physics, cameras and policy evaluation |
-| `so101-il-py312` | Python 3.12.15; NumPy 2.2.6; torch 2.7.1+cu128; LeRobot 0.6.1 | Dataset conversion, neural-network training and model server |
-
-Installed LeRobot 0.6.1 declares **Python ≥3.12 and NumPy ≥2.0**. Installing it
-into the pinned simulator environment would conflict with that stack. A separate
-environment was used to preserve the existing simulator. During inference, a
-local Unix socket carries RGB bytes, joint-state lists and predicted targets
-between the processes; neither environment imports the other one's packages.
-
-Use these activation blocks in **every new terminal**. They refer to the existing
-local installation; no installation or upgrade is needed here. A GitHub clone
-alone does not include Conda environments, robot assets, recordings or weights.
-The training dependency lock is [configs/il_requirements.lock.txt](configs/il_requirements.lock.txt).
-External simulator paths and versions are in the handoff.
-
-**Simulation terminal:**
+In every new simulation shell:
 
 ```bash
 cd /home/rynem8/robotics/bimanual-so101-benchmark
@@ -124,260 +35,213 @@ export LEISAAC_ASSETS_ROOT=/home/rynem8/robotics/leisaac/assets
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 ```
 
-**Training / model-server terminal:**
+This preserves Python 3.11.16 / NumPy 1.26 / torch 2.7.0+cu128, Isaac Sim 5.1,
+Isaac Lab 2.3 and LeIsaac 0.4. No installed packages or drivers are changed.
+Conversion and future model serving use a separate existing environment:
 
 ```bash
-cd /home/rynem8/robotics/bimanual-so101-benchmark
 source /home/rynem8/miniforge3/etc/profile.d/conda.sh
 conda activate so101-il-py312
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 ```
 
-## Cameras and the data-quality problem
+LeRobot 0.6.1 requires Python ≥3.12 and NumPy ≥2; separation avoids changing the
+simulation stack. Both ACT and Diffusion use this same training environment.
+During future inference a local socket carries images/joints and targets between
+processes. There is no trained model available to serve after the reset.
 
-The dataset uses **two fixed world cameras**, `overview` and `front`, each
-224 × 224 RGB pixels. They are created in
-[scripts/benchmark_env.py](scripts/benchmark_env.py), under the scene root. Neither
-is attached to a wrist. The normal simulator viewport is a separate camera and
-is **not** what the policy sees.
+## Inspect the expert and actual policy cameras
 
-The design intent was to give the network a stationary view of both arms, the
-transfer region and the basket. That simplified synchronized recording, but it
-was not established as the best observation design. A wrist camera was not
-implemented or compared. No camera-placement study or policy-view visual
-acceptance gate was completed before training.
+Expert without learning or recordings, in the simulation environment:
 
-The user's inspection identified poor training images. Inspection of saved
-`train_v2_000` frames 0 and 1,500 confirms the concern: the initial front-view cube
-is only roughly ten pixels across; it is not clearly visible in the initial
-overview; fingers obscure parts of the cube during transfer. A nonblank 224-pixel
-scene image can still be a poor observation for precise contact manipulation.
-Existing automated checks test dimensions, timestamps, calibration and missing
-or blank images. They do **not** test object visibility, occlusion, usable grasp
-detail or whether the cameras contain enough information to infer the action.
+```bash
+python scripts/run_manipulation.py --cpu-threads 8 --stage full \
+  --motion-mode continuous --expert-hz 20 --grip-feedback-from-lift
+```
 
-That gap should have been exposed before the longer training runs. Bad visibility
-is a concrete concern, but the recorded experiments do not prove it is the sole
-cause of failure. Four demonstrations, action-chunk feedback intervals and the
-custom training recipe also remain unresolved. The
-[camera review](docs/POLICY_REVIEW.md#camera-choice-and-image-quality) records the
-exact camera parameters, local image paths and what a wrist-camera change would
-involve. No camera or training code was changed for this documentation task.
-
-## Collect, inspect and convert demonstrations
-
-### 1. Inspect the expert in the simulator
-
-In the **simulation terminal**, after its activation block:
+Camera inspection, also in the simulation environment (choose a fresh output
+folder each time; the inspector refuses to overwrite an existing folder):
 
 ```bash
 python scripts/run_manipulation.py --cpu-threads 8 --stage full \
   --motion-mode continuous --expert-hz 20 --grip-feedback-from-lift \
-  --output-dir outputs/controller/user_expert_view
+  --camera-preview outputs/camera_v2/manual_review \
+  --output-dir outputs/controller/camera_v2_manual
 ```
 
-This runs the programmed expert, not a learned policy. GUI is the default.
-Planning can pause motion while computing collision checks. A successful run
-prints `[RESULT]` and then `[VIEWER]`; close the window after inspection.
-`--cpu-threads 8` uses eight Kit workers, the setting used for the successful
-retry after a one-worker startup stall. It does not change the policy rate.
+GUI is the default. `--headless` is only an explicit optional test flag. The
+ordinary viewport is not the policy observation. Open the side-by-side images in
+the preview directory: overview, left wrist and right wrist are captured from
+actual synchronized RGB tensors. `audit.json` records physical ticks, phase,
+actual extrinsics and intrinsics. Snapshots cover initial, approach, closure,
+lift, transfer, receiver closure, transport and release/settling phases. They
+contain no action trajectory and are not a demonstration dataset.
 
-### 2. Inspect actual recorded policy images before selecting a dataset
+Check whether the cube and finger contacts remain visible in the relevant wrist
+view, including approach and receiver takeover. Inspect the basket framing during
+right transport/release. Human camera acceptance is required before collection.
+A successful GUI run stays at `[VIEWER]`; failed runs can close with exit 1.
+Read the physical result JSON; image capture alone is not manipulation success.
 
-An existing raw episode is:
+## Camera architecture and calibration
+
+Policy keys are `observation.images.overview`, `.left_wrist`, `.right_wrist`.
+Each RGB stream is 640 × 480 at the 20 Hz observation boundary. Initial pinhole
+parameters: focal length 12 mm, horizontal aperture 20.955 mm, square pixels,
+approximately 82.25° horizontal FOV, fx=fy≈366.50 pixels, centre=(320,240),
+clipping 0.01–10 m. These are a plausible downsampled UVC-camera projection,
+not measured specifications of the eventual physical lens.
+
+The overview eye is (0, −0.10, 0.72) m, looking at (0, −0.10, 0.02) m.
+Wrist sensors are children of `Left_Robot/gripper` and `Right_Robot/gripper`.
+The selected upstream hex-nut mount attaches to the wrist-roll housing, whose
+mesh belongs to this rigid gripper link. It does not follow the moving jaw.
+Local sensor position is (0.0141, −0.045, 0.005) m; optical +Z looks toward
+(0.0141, 0, −0.09) m in the same link. ROS axes are +X right, +Y down, +Z forward;
+The ROS camera-to-parent quaternion (w,x,y,z) is
+`(0, 0, 0.97563770, 0.21938797)`; optical +X is negative parent X.
+`policy_cameras.py` computes the orthonormal rotation and quaternion.
+This offset is an initial simulation estimate and needs physical measurement
+before sim-to-real. Attachment checks compare sensor poses with measured link
+poses; the robot USD, mass and collision shapes are unchanged.
+
+The optional [mount STL](assets/camera_mount/README.md) is provided with its
+license for mechanical review, not spawned collision geometry. Its registration
+to the robot and cable clearance are not validated. Add `--diagnostic-front` to camera preview to save the former fixed front view
+as separate diagnostic PNGs. It is excluded from policy features. Presentation
+also uses the independent viewer camera. No wrist hardware or lens has been physically calibrated here.
+
+Camera transform compatibility: in the pinned stack, the default USD camera pose
+reader did not track the PhysX parent accurately. A project-owned camera subclass
+reads live Fabric poses, while capture synchronizes only the camera Fabric world
+transform from the measured link and constant local offset before rendering.
+No robot/object state is written by this adapter. Actual sensor poses are then
+checked against the measured link at 20 micrometres / rotation-matrix 2e-4 tolerance.
+
+
+## Observation/action contract and future data procedure
+
+The state is 24 float32 values: left q[6], right q[6], left qd[6], right qd[6].
+Joint order per arm: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex,
+wrist_roll, gripper. Positions/targets are radians; velocities are rad/s.
+The 12 actions are absolute position targets, not Cartesian poses or deltas.
+Each target is held for three 60 Hz physics ticks. The recorder pairs pre-action
+RGB/state with that exact held command. Cube poses/contact diagnostics remain
+separate from network inputs. Independent physical evaluation must verify every
+successful demonstration; all failed attempts and reasons remain counted.
+
+After camera approval, the user chooses pilot poses and quantity. Supply a small
+manifest with schema `so101-cases-1.0`, `split: "train"`, and a `cases` list of
+`{name, cube_xy_m, yaw_deg, seed}`. Existing `configs/task_distribution.json`
+contains the historical inward distribution; it is not silently modified or
+endorsed as the new benchmark distribution. Separate train, validation and
+held-out manifests and artifact roots are required. Do not tune against the final
+held-out set. Human teleoperation is a future input adapter, not implemented.
+
+A one-case example is [configs/camera_v2_pilot.json](configs/camera_v2_pilot.json),
+explicitly marked unapproved. It is configuration only and has not been executed.
+
+The future expert recording interface is the expert command above plus
+`--cases-file <approved-manifest> --record-dir datasets/<new-raw-root>` and
+`--authorize-recording`. This explicit flag is only for a user-authorized session
+following camera approval; do not use it now. Review actual images and task
+outcomes before conversion. Conversion in the Python 3.12 environment uses:
 
 ```text
-datasets/raw_train_v2_corrected/train_v2_000_20261022T171242694160Z/
-├── episode.json       # reset pose, cameras, source identity, evaluation
-├── trajectory.npz     # measured state, requested/applied targets, times
-├── overview/*.png     # the policy's fixed overhead view
-├── front/*.png        # the policy's fixed front view
-├── privileged.json    # object/contact diagnostics, excluded from training
-└── attempt.json       # completion/interruption record
+python scripts/policy_pipeline.py convert --raw <approved-raw-root> --output <new-converted-root>
 ```
 
-Open PNGs from both views at approach, grasp, lift, transfer and placement. Judge
-cube visibility, contact detail and occlusion yourself. Frame 1,500 is 75 seconds
-after the first recorded sample at 20 Hz; episode timing varies. The converted
-images are copied from these PNGs. Conversion cannot recover details that were
-not visible when recorded. Do not select these recordings just because the
-expert completed the task.
+Conversion validates chronology, held targets, calibrated cameras and image
+presence; rejects mixed split labels; keeps failed-generation counts in its
+manifest; and creates official LeRobot v3 image/parquet data. Statistics are
+computed anew. Automated nonblank checks do not replace visual data acceptance.
 
-### 3. Optional: record a new dataset
+## Official training preparation, after data acceptance
 
-Only run this after deciding that the current camera setup and task distribution
-are suitable. In the **simulation terminal**:
+The former custom optimizer loop has been removed. `prepare-training` only
+validates metadata and prints an official command; it never executes updates:
 
-```bash
+```text
+python scripts/policy_pipeline.py prepare-training --method act \
+  --dataset <approved-converted-train-root> --output <new-run-root> \
+  --steps <user-choice> --batch-size <user-choice> \
+  --validation-fraction <user-choice> --eval-steps <user-choice>
+```
+
+Use `diffusion` for the other policy. Budget and hyperparameters remain user
+choices. The emitted command uses installed `lerobot.scripts.lerobot_train`, its
+policy presets, official optimizer/scheduler and episode-aware sampling. Uploads
+and environment evaluation are disabled; this custom simulator is not yet an
+EnvHub/Gym environment. Official offline validation loss uses an episode split;
+it is not physical success evaluation. Do not confuse that split with a separately
+collected validation distribution. Inference still loads official processors and
+`select_action` through the local socket adapter, with camera dimensions taken
+from the saved policy configuration.
+
+Verified so far: official CLI help and a disposable 48-frame format fixture with
+three cameras loaded through ACT/Diffusion sequence readers. No model was created,
+no optimizer was run, and no checkpoint was saved. A real approved-dataset training
+run and full official-checkpoint inference remain unverified until later gates.
+ACT versus Diffusion comparison must use agreed data/budgets, independent physical
+evaluation, full attempted-case denominators and explicit observation privileges.
+
+## Evidence ready for camera review
+
+Final CPU regression: **37/37 passed** in 69.868 seconds, including optical-frame,
+wrong-parent/rotation, RGB and timestamp checks. Exact commands and logs are in
+the [handoff](docs/ROBOTICS_CODEX_HANDOFF.md).
+
+The complete nominal camera-enabled run passed all independent stages in
+153.1833 simulated seconds, with zero forbidden collisions, peak speed
+2.0110 rad/s and peak effort 1.3496 Nm. Its report is
+`outputs/controller/camera_v2_synchronized/full_20261023T085954936832Z.json`.
+The physical regression used the default three-camera configuration; the optional
+front diagnostic was separately checked in a reset-only run. Full history and
+source hashes remain in those local reports. This is one nominal regression,
+not validation of a varied collection distribution or real hardware.
+
+Open the existing review files without rerunning simulation:
+
+- [Eight-phase contact sheet](outputs/camera_v2/synchronized/review_contact_sheet.jpg)
+- [All 51 phase snapshots and audit.json](outputs/camera_v2/synchronized/)
+
+The left/right wrist view follows its arm and shows the held cube at a larger
+scale. The overview still has hand occlusion and the transfer region approaches
+its lower edge. Camera acceptance must assess these limitations. An automatic
+occlusion/visibility score has not been implemented. The next gate is the user's
+visual decision; approval does not authorize training or collection by itself.
+
+Future inference after a separately approved official training run uses two
+activated shells. In the training shell, choose the matching method and official
+saved checkpoint directory:
+
+```text
+python scripts/policy_pipeline.py serve --method <act-or-diffusion> \
+  --checkpoint <run-root>/checkpoints/last/pretrained_model \
+  --socket /tmp/so101_user_policy.sock
+```
+
+After `[READY]`, in the simulation shell:
+
+```text
 python scripts/run_manipulation.py --cpu-threads 8 --stage full \
-  --motion-mode continuous --expert-hz 20 --grip-feedback-from-lift \
-  --cases-file configs/task_distribution.json --split train \
-  --record-dir datasets/raw_train_user_v1 \
-  --output-dir outputs/controller/user_train_collection
+  --policy-socket /tmp/so101_user_policy.sock --case nominal
 ```
 
-This attempts all **32 predefined training cases**, once each. It is a new
-collection, not a resume of the twelve existing recordings. Each attempt gets a
-timestamped directory; rerunning into the same root can add duplicate cases.
-Choose a fresh root for each intended dataset. For a separate validation
-collection, change `--split train` to `--split validation` and use different raw
-and report directories. The manifest contains 8 validation and 30 held-out cases.
-Do not combine them with training. GUI remains the default for these commands.
+These are future interfaces, not runnable inference for the deleted old weights.
 
-`--record-dir` enables the two policy cameras automatically and records exact
-20 Hz held targets. A complete row contains the state/images **before** its action,
-then the same target applied for three 60 Hz physics ticks. Failed and interrupted
-attempts remain recorded, but the converter admits only validated full successes.
-Success filtering is suitable for behavior cloning; all attempted cases must
-still count when reporting expert reliability.
+## Later roadmap
 
-### 4. Convert the dataset you actually choose
+Mimic/SkillGen are not integrated. The existing IK expert remains primary. Mimic
+would require a task adapter with object-relative cube/bin frames, coordinated
+left/right subtask constraints and pose/action conversion for the five-axis arms.
+SkillGen additionally needs a compatible cuRobo robot/world model and carried-cube
+collision handling. Replicator changes lighting/appearance; it does not generate
+valid grasp trajectories. Details and pinned sources are in the handoff.
 
-In the **training terminal**, this example converts the twelve currently available
-successful raw training episodes into a **new** LeRobot dataset:
-
-```bash
-python scripts/policy_pipeline.py convert \
-  --raw datasets/raw_train_v2_corrected \
-  --output datasets/lerobot_user_train12
-```
-
-Expected for the present local root: `episodes: 12`, `frames: 36268`, schema
-`v3.0`. This is a format conversion, not a quality endorsement. If you collected
-new data in step 3, replace both paths with the new raw root and a fresh converted
-root. Do not overwrite `datasets/lerobot_corrected_train4`.
-
-Inspect `<converted-root>/conversion.json`: it lists every attempted raw folder,
-accepted episodes and source hashes. The converter checks synchronization, action
-bounds and image presence, writes official LeRobot image/parquet data and reopens
-it using the official reader. Dataset statistics are computed from accepted
-frames in that root. The converter rejects mixed split labels; the trainer itself
-does not enforce that its input is a training split, so choose the path carefully.
-
-## Train ACT or Diffusion yourself
-
-In the **training terminal**, select the converted dataset first. The commands
-below use the twelve-episode conversion from step 4. They have **not** been run as
-part of this documentation task. Run the methods sequentially and use new output
-directories. A simulator does not need to be running.
-
-```bash
-python scripts/policy_pipeline.py train --method act \
-  --dataset datasets/lerobot_user_train12 --output checkpoints/act_user_v1 \
-  --steps 4000 --batch-size 16 --workers 2 --seed 701 --lr 0.0001 --log-every 100
-```
-
-```bash
-python scripts/policy_pipeline.py train --method diffusion \
-  --dataset datasets/lerobot_user_train12 --output checkpoints/diffusion_user_v1 \
-  --steps 4000 --batch-size 16 --workers 2 --seed 701 --lr 0.0001 --log-every 100
-```
-
-These reproduce the existing **diagnostic recipe** on your selected data. They
-are not a proven sufficient training budget or an optimized published recipe.
-To repeat the previous four-demo experiment, use
-`--dataset datasets/lerobot_corrected_train4` instead, keeping a new output path.
-
-`--steps` counts optimizer updates, not episodes or epochs. `--batch-size` is the
-number of sampled sequence anchors per update; `--workers` controls data-loading
-processes. `--seed` initializes the random generators. `--lr` sets the optimizer's
-base learning rate; ACT's visual backbone has a separate 1e-5 group rate.
-Omitting `--no-pretrained` uses ImageNet ResNet18 initialization. It does not load
-an existing robot policy. Architectures, chunk lengths and normalization choices
-are currently defined in `policy_pipeline.py:train`, not exposed as CLI options.
-The [review](docs/POLICY_REVIEW.md#actual-training-recipe) explains every setting
-and where the custom loop differs from LeRobot defaults.
-
-Training prints loss/gradient rows and ends with `[CHECKPOINT]`. It saves:
-
-| File / directory under your output root | Meaning |
-| --- | --- |
-| `pretrained_model/` | Final weights, architecture configuration and saved normalization processors; pass this directory to `serve` |
-| `step_000500/`, `step_001000/`, … | Model and processor snapshots every 500 updates; usable for inference |
-| `training.json` | Actual CLI arguments, dataset size, source hash, parameter count and logged training metrics |
-| `progress.json` | Metrics updated during training |
-| `training_state.pt` | Optimizer and Torch RNG state for diagnosis; the CLI has no resume option |
-
-The script performs no validation loop, early stopping or best-checkpoint
-selection. Final means last update, not best-performing policy. Low loss and the
-finite-action check only establish that optimization produced numerical outputs.
-Physical inference must be evaluated separately. Do not replace old weights with
-new ones until you have compared them yourself.
-
-## View the trained models in Isaac Sim
-
-Use **two terminals**: the training environment serves one policy; the simulation
-environment executes it. Choose either ACT or Diffusion. The following commands
-use existing four-demo checkpoints so you can inspect the previous work without
-training anything.
-
-### Terminal 1: start one model server
-
-After the **training activation block** above, choose ACT:
-
-```bash
-python scripts/policy_pipeline.py serve --method act \
-  --checkpoint checkpoints/act_corrected_train4_4000/pretrained_model \
-  --socket /tmp/so101_manual_act.sock \
-  --trace-dir outputs/policy_traces/manual_act --trace-images
-```
-
-Or choose Diffusion instead:
-
-```bash
-python scripts/policy_pipeline.py serve --method diffusion \
-  --checkpoint checkpoints/diffusion_corrected_train4_4000/pretrained_model \
-  --socket /tmp/so101_manual_diffusion.sock \
-  --trace-dir outputs/policy_traces/manual_diffusion --trace-images
-```
-
-Wait for `[READY]`. To inspect your new training run, replace the checkpoint with
-`checkpoints/act_user_v1/pretrained_model` or
-`checkpoints/diffusion_user_v1/pretrained_model`. Keep the matching `--method`.
-Do not start two servers on the same socket. If a path already exists, use a fresh
-matching socket path in both terminals instead of deleting an unknown socket.
-
-### Terminal 2: run the matching simulator command
-
-After the **simulation activation block**, for ACT:
-
-```bash
-python scripts/run_manipulation.py --cpu-threads 8 --stage full \
-  --policy-socket /tmp/so101_manual_act.sock --case nominal \
-  --output-dir outputs/controller/manual_act_inference
-```
-
-For Diffusion instead:
-
-```bash
-python scripts/run_manipulation.py --cpu-threads 8 --stage full \
-  --policy-socket /tmp/so101_manual_diffusion.sock --case nominal \
-  --output-dir outputs/controller/manual_diffusion_inference
-```
-
-These open a simulator window and enable the policy cameras. No `--headless` flag
-is used. The model receives RGB and joint states; its 12 absolute joint targets
-are held for three physics ticks. There is no expert recovery planner or hidden
-gripper servo in this mode. Physics pauses while waiting for inference, so 20 Hz
-simulated control does not guarantee 50 ms wall-clock latency.
-
-With the existing checkpoints, ACT has timed out without pickup and Diffusion has
-failed within seconds. A failed evaluation exits 1 and can close the window
-immediately. Read the terminal and `full_<timestamp>.json` in your output directory.
-A successful GUI evaluation remains open at `[VIEWER]`. Stop the simulator before
-switching models, then stop its server with Ctrl+C. The server otherwise stays
-available after a simulator client disconnects.
-
-The optional trace flags save actual input PNGs, joint states and requested
-outputs in a new `seed_*` folder per reset. They do not save proof of applied
-motion or terminal images. Omit both flags to avoid that extra disk I/O.
-
-For all eight predefined validation poses, replace `--case nominal` with
-`--cases-file configs/task_distribution.json --split validation`. This runs
-**all** validation cases; adding `--case` does not narrow a `--cases-file` run.
-Use held-out cases only for your final assessment, not repeated tuning. Nominal
-is outside the inward-Y training strip, so distinguish it from in-range testing.
-Held-out cases already used during development are not a pristine final test set.
+SmolVLA comes after accepted cameras, demonstrations and ACT/Diffusion baselines.
+Sim-to-real additionally requires measured camera intrinsics/extrinsics, wrist
+mount/cable clearance, actuator calibration and hardware safety validation.
 
 ## What each file does
 
@@ -388,10 +252,14 @@ training command.
 
 | File | Responsibility and inputs → outputs | How it is used |
 | --- | --- | --- |
-| [scripts/policy_pipeline.py](scripts/policy_pipeline.py) | Raw folders → LeRobot dataset; dataset → official ACT/Diffusion weights; RGB/joints → predicted targets | Training environment: `convert`, `train`, `serve` commands above |
+| [scripts/policy_cameras.py](scripts/policy_cameras.py) | Project-owned camera configuration, optical transforms and sparse phase contact sheets | Used by `--camera-preview`; no training records |
+| [tests/test_policy_cameras.py](tests/test_policy_cameras.py) | Optical axes, missing cameras, RGB shapes and 20 Hz clock guards | CPU unittest |
+| [configs/camera_v2_pilot.json](configs/camera_v2_pilot.json) | One nominal, explicitly unapproved pilot manifest | Edit/approve before user-authorized collection |
+| [assets/camera_mount/README.md](assets/camera_mount/README.md) | Upstream optional mesh provenance, units, license and limitations | Reference only; not spawned |
+| [scripts/policy_pipeline.py](scripts/policy_pipeline.py) | Raw folders → LeRobot dataset; dataset metadata → official training command; RGB/joints → predicted targets | Training environment: `convert`, `prepare-training`, `serve` commands above |
 | [scripts/dataset_io.py](scripts/dataset_io.py) | Writes and validates 20 Hz raw episodes, joint order, pre-action timing and held targets; keeps privileged diagnostics separate | Imported by recording, conversion and replay |
 | [scripts/run_manipulation.py](scripts/run_manipulation.py) | Main CLI; chooses expert, recorded-target replay or learned control; orchestrates phases and writes reports | Simulation environment: `--stage full`; `--record-dir`, `--policy-socket` or `--replay` select modes |
-| [scripts/benchmark_env.py](scripts/benchmark_env.py) | Fixed cameras, measured observations, reset, PhysX stepping, joint targets and gravity compensation | Imported by the main simulator runner; camera changes start here |
+| [scripts/benchmark_env.py](scripts/benchmark_env.py) | Attached wrist cameras and overview, measured observations, reset, PhysX stepping, joint targets and gravity compensation | Imported by the main simulator runner; camera changes start here |
 | [scripts/benchmark_core.py](scripts/benchmark_core.py) | Task specification, independent evaluator, fixed diagnostic cases, trajectory metrics | Imported by runner/environment; pure CPU |
 | [scripts/inspect_task_layout.py](scripts/inspect_task_layout.py) | Asset paths, Isaac startup, robot/table/cube/bin configuration and initial poses | Shared scene module; standalone `python scripts/inspect_task_layout.py` is a GUI diagnostic, not training |
 | [scripts/so101_model.py](scripts/so101_model.py) | Robot USD → transforms, calibrated TCP, meshes, FK and constrained IK | Imported by scene/control; standalone offline model audit requires bundled USD libraries |
@@ -411,20 +279,3 @@ training command.
 | [docs/ROBOTICS_CODEX_HANDOFF.md](docs/ROBOTICS_CODEX_HANDOFF.md) | Historical commands, results, physical evidence and environment locks | Experiment history and agent continuity |
 | [AGENTS.md](AGENTS.md) | Repository operating rules | Agent instructions |
 | `.gitignore`, `.vscode/settings.json` | Artifact/secret exclusions; existing editor environment selection | Repository configuration |
-
-## What is on GitHub and what stays local
-
-All repository source used for recording, conversion, training and inference,
-the training package lock, task poses and the review documents are tracked on
-`feat/fingertip-geometry-calibration`. Historical source is preserved in Git.
-Official LeRobot/Isaac packages are external dependencies, not vendored code.
-
-At the user's request, **datasets and model weights are not uploaded**. Local
-`datasets/`, `checkpoints/`, `outputs/` and caches remain ignored. The review JSON
-contains metadata and statistics only; it cannot reproduce training or verify
-visual quality without the local images. A remote reviewer can audit the code
-and choices, but cannot independently rerun the existing weights from Git alone.
-
-No simulation, training or inference process was found running in this workspace
-at the documentation audit. No new experiment was started. Read the review for
-limitations before treating any existing checkpoint as a useful controller.
