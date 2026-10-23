@@ -9,9 +9,9 @@ and measured results; report conflicts and update the current authority.
 
 The deterministic left pickup → mid-air right handover → basket placement task
 is established. Do not restart geometry/TCP/IK milestones or the consumed pilot.
-Next work is the repository-consolidation brief and its verification, followed
-by owner review. Human pilot acceptance remains pending; no accepted training
-corpus or trained model exists in the reset pipeline.
+Repository consolidation and its regression/usability checks are complete;
+next is owner code/documentation review. Human pilot acceptance remains pending;
+no accepted training corpus or trained model exists in the reset pipeline.
 
 ## Preserve the proven benchmark
 

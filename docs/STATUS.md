@@ -25,7 +25,8 @@ CPU checks and limited expert/replay physics regressions passed; exact condition
 and remaining UI checks are in [VERIFICATION](VERIFICATION.md). The owner confirmed
 the stationary camera viewer and nominal raw-review HTML are good, but reported
 `InspectionGuides` flickering/collapsing in the Stage inspector. Repeated USD
-visibility edits have been removed; a focused human recheck of that fix remains.
+visibility edits have been removed. The owner then confirmed: "Guides expand and
+select normally." The consolidated viewer/HTML usability checkpoint is complete.
 The owner also requested cleanup: 73 verified generated cache/preview files were
 removed (776,310,957 bytes); pilot data, benchmark evidence, model-backbone cache
 and tracked files remain intact. No tracked-file/branch deletion or publication
@@ -47,8 +48,8 @@ approval. The purpose-selected pilot does not estimate general success probabili
 Authorized: source/configuration audit, safe reversible CLI/documentation
 consolidation, meaningful local commits on `feat/repository-consolidation`, CPU
 tests, a stationary scene/camera diagnostic, and limited expert/replay physical
-regression without demonstration recording. Ask for one consolidated human visual
-checkpoint when the new viewing workflow is ready.
+regression without demonstration recording. The consolidated human visual
+checkpoint is complete; code/documentation review is the next decision.
 
 Additional permission now covers inspected, disposable generated cache/preview
 cleanup only. See [the exact cleanup record and remaining candidates](REPOSITORY_AUDIT.md#generated-output-cleanup-and-retention).
@@ -95,7 +96,9 @@ remain valid. Current completion and permission state belong here.
 Baseline: `a5cdc18`, already published on `feat/il-camera-dataset-v2`; local
 recovery tag `reference/pre-repository-consolidation`. Existing expert/camera
 recovery tags remain intact. Main is protected. See [repository audit](REPOSITORY_AUDIT.md)
-for branch ancestry and proposed cleanup; no removal is authorized.
+for branch ancestry and proposed cleanup; no listed tracked-file or branch removal
+is authorized.
 
-After consolidation regression and visual review, the owner reviews the code/docs.
+Consolidation regression and visual review are complete; the owner reviews the
+code/docs next.
 Pilot acceptance and any final collection/training protocol are separate decisions.

@@ -13,7 +13,7 @@ updated from actual commands; pending items are not completion claims.
 | Baseline CPU suite | 45 tests passed in 71.842 s before edits |
 | Consolidated CPU suite | 55 tests passed in 71.623 s, including 10 CLI/authorization tests |
 | Stationary headless scene | Three actual calibrated RGB tensors, 41 render captures, 180 reset ticks, **0 viewer task ticks**, no expert/recording |
-| Visible stationary GUI smoke | Three sensor panels created, all selector choices checked, 32 captures, **0 viewer task ticks**; visual usability pending human review |
+| Visible stationary GUI smoke | Three sensor panels created, all selector choices checked, 32 captures, **0 viewer task ticks**; subsequent owner usability review passed after the guide fix |
 | Official LeRobot CLIs | Installed training and dataset-viz `--help` succeeded; no updates |
 | ACT/Diffusion configs | Both named 1-observation/64-prediction/8-execution recipes and saved-config resume flags parsed by the installed official config wrapper; CUDA resolved on GPU-enabled check; no model/optimizer constructed |
 | Full physical expert | 1/1 full-task success, zero forbidden contacts; independent evaluation **and complete transfer trace exactly match** preserved reference |
@@ -22,7 +22,7 @@ updated from actual commands; pending items are not completion claims.
 | Documentation/examples | 139 internal links resolve; 42 example commands parse; all 49 maintained files inventoried |
 | Raw pilot preservation | All 12 full raw byte digests, episode inventory and original QA/report hashes unchanged |
 | Actual gate rejection checks | Unauthorized collection, unaccepted pilot conversion, missing train data and missing checkpoint all rejected; no data/model/socket created |
-| Human visual checkpoint | Owner accepted camera viewer and raw-review HTML; reported guide-tree instability. Targeted fix passed automated checks; guide expansion/selection recheck pending |
+| Human visual checkpoint | Owner accepted camera viewer and raw-review HTML; after the targeted guide fix, confirmed "Guides expand and select normally" |
 
 ## Reproduce the cheap checks
 
@@ -86,9 +86,9 @@ not successful experiments. Official viewer help is verified; opening an accepte
 converted real dataset remains pending that dataset's existence.
 
 The raw-review HTML was generated from the preserved nominal episode. No browser
-surface is enabled for computer use in this session, so browser layout/playback
-remain part of the consolidated human checkpoint. An attempted repository-wide
-loopback HTTP server was rejected by automatic approval for excessive local data
+surface is enabled for computer use in this session; the owner subsequently
+accepted its layout/playback in the consolidated human checkpoint. An attempted
+repository-wide loopback HTTP server was rejected by automatic approval for excessive local data
 exposure; it was not started. No workaround server or dataset upload was used.
 
 Environment metadata was read again: simulation Python 3.11.16, NumPy 1.26.0,
@@ -161,21 +161,19 @@ after this viewer addition. All scripts/tests compile. Full raw byte digests and
 baseline QA/report hashes remain unchanged for all 12 pilot episodes. GPU identity
 was read again: RTX 5090, driver 580.178.04, 32,607 MiB; no stack change.
 
-One consolidated **human usability** check remains (separate from accepting the
-12 pilot videos). In `leisaac-sim`, the prepared stationary window uses:
+The consolidated **human usability** check is complete (separate from accepting
+the 12 pilot videos). In `leisaac-sim`, the initial stationary review used:
 
 ```bash
 python scripts/so101.py scene --frames \
   --snapshot-dir outputs/repository_consolidation/scene_human_review
 ```
 
-Check the three actual feed panels/selector, both attached wrist sensors and
-overhead optical guides. The cube/robots must remain stationary after settling.
-Also open `outputs/repository_consolidation/nominal_review.html` locally and scrub
-the three images with their joint/action table. No browser surface is enabled for
-automated interaction here; do not mark layout/playback accepted until the owner
-reviews it. Close Isaac and report any problem. This does not grant pilot-data
-acceptance, further collection, training, deletion, merge or push permission.
+The owner accepted the actual camera-feed viewer and
+`outputs/repository_consolidation/nominal_review.html`, which synchronizes three
+images with the joint/action table. The initial Stage-tree issue and its successful
+focused recheck are documented below. This does not grant pilot-data acceptance,
+further collection, training, deletion, merge or push permission.
 
 ## Owner feedback, InspectionGuides fix and output cleanup
 
@@ -198,7 +196,9 @@ snapshot directory `outputs/repository_consolidation/guides_fix_check` produced
 guide-change notices**. Physical clock, joint position and cube pose changes
 were all zero. Five camera tests passed in 0.010 s and ten CLI/gate tests in
 0.224 s; existing sensor functions remain AST-identical to the preserved baseline.
-The Stage expansion/selection fix awaits a focused owner visual recheck.
+The owner tested the corrected visible viewer at committed source `a23bfe7` and
+confirmed: **"Guides expand and select normally."** This completes the focused
+Stage expansion/selection recheck and the consolidated usability checkpoint.
 
 Cleanup removed 73 verified stale cache/preview files /776,310,957 bytes;
 [the exact scope and retained outputs](REPOSITORY_AUDIT.md#generated-output-cleanup-and-retention)
