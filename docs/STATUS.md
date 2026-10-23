@@ -17,6 +17,15 @@ results and [consolidation verification](VERIFICATION.md) for interface regressi
   physical replay interface. Nine were not physically replayed. Replay stopped
   at independent success and omitted the recorded final settling tail.
 
+## Repository consolidation
+
+The unified CLI, stationary camera inspection, named official-policy preflight,
+connected guides and complete file/cleanup inventory are implemented locally.
+CPU checks and limited expert/replay physics regressions passed; exact conditions
+and remaining UI checks are in [VERIFICATION](VERIFICATION.md). One consolidated
+owner usability review of the new scene/feed panel and raw-review HTML is pending.
+No source/file/branch deletion or publication is included.
+
 ## What is pending
 
 **Human acceptance of all 12 pilot videos/data is pending.** Automatic QA is not

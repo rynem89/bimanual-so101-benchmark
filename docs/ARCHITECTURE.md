@@ -19,7 +19,8 @@ flowchart TD
     Data --> Expert
     Data --> Recorder
     Learning --> LeRobot[Official LeRobot 0.6.1]
-    Learning -. RGB / q / qd and action socket .-> Expert
+    Expert -. RGB / q / qd .-> Learning
+    Learning -. absolute action targets .-> Expert
 ```
 
 Simulation and learning are separate processes/environments. The expert has

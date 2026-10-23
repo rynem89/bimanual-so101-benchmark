@@ -362,6 +362,17 @@ def inspect_scene(layout, args):
         for name, camera in metadata.items():
             check_camera(camera, name)
         initial_step = env.total_steps
+        initial_time = sim.current_time
+
+        def physical_state():
+            # Read PhysX directly: cached ArticulationData would not establish
+            # that render-only inspection left the real robot/object unchanged.
+            joints = np.stack([arm.root_physx_view.get_dof_positions()[0].cpu().numpy().copy()
+                               for arm in env.arms])
+            cube = env.cube.root_physx_view.get_transforms()[0].cpu().numpy().copy()
+            return joints, cube
+
+        initial_joints, initial_cube = physical_state()
         stage = omni.usd.get_context().get_stage()
         guides = UsdGeom.Xform.Define(stage, '/World/InspectionGuides')
 
@@ -438,17 +449,27 @@ def inspect_scene(layout, args):
             sim.render()
             captures += 1
             time.sleep(.05)
+        final_joints, final_cube = physical_state()
+        joint_change = float(np.abs(final_joints - initial_joints).max())
+        cube_change = float(np.linalg.norm(final_cube[:3] - initial_cube[:3]))
+        quaternion_change = float(min(np.linalg.norm(final_cube[3:] - initial_cube[3:]),
+                                      np.linalg.norm(final_cube[3:] + initial_cube[3:])))
         report = dict(schema='so101-stationary-scene-check-1.0', calibration_sha256=CALIBRATION_SHA256,
                       cameras=metadata, reset_physics_steps=initial_step,
                       viewer_physics_steps=env.total_steps - initial_step, rendered_captures=captures,
+                      viewer_sim_time_change_s=sim.current_time-initial_time,
+                      maximum_joint_change_rad=joint_change, cube_translation_change_m=cube_change,
+                      cube_quaternion_change=quaternion_change,
                       expert_started=False, recording_started=False, frames_shown=args.frames,
                       gui_panel_created=window is not None,
                       gui_selection_checked=window is not None,
                       note='Static attachment/intrinsics checks only; GUI usability still requires human review.')
         if args.snapshot_dir:
             (args.snapshot_dir / 'scene_check.json').write_text(json.dumps(report, indent=2) + '\n')
-        if report['viewer_physics_steps'] != 0:
-            raise RuntimeError('Stationary viewer advanced task physics')
+        if (not np.isfinite([joint_change, cube_change, quaternion_change, report['viewer_sim_time_change_s']]).all()
+                or report['viewer_physics_steps'] != 0 or abs(report['viewer_sim_time_change_s']) > 1e-12
+                or max(joint_change, cube_change, quaternion_change) > 1e-7):
+            raise RuntimeError('Stationary viewer advanced physical time or changed measured robot/cube state')
         print('[SCENE RESULT]', json.dumps(report), flush=True)
     finally:
         if window is not None:

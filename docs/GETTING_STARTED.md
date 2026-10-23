@@ -109,14 +109,18 @@ and pinned external checkouts remain the source of truth if they disagree.
 | --- | --- | --- |
 | Conda environment | `leisaac-sim` | `so101-il-py312` |
 | Python | 3.11.16 | 3.12.15 |
-| NumPy | 1.26.x | 2.2.6 |
+| NumPy | 1.26.0 | 2.2.6 |
+| SciPy | 1.15.3 | Not required by the project learning adapter |
 | PyTorch | 2.7.0+cu128 | 2.7.1+cu128 |
 | Framework | Isaac Sim 5.1.0, Isaac Lab 2.3.0, LeIsaac 0.4.0 | LeRobot 0.6.1 |
 | GPU/driver | RTX 5090 32 GB / NVIDIA 580.178.04 | Same workstation GPU |
 
 Isaac Lab checkout: `/home/rynem8/robotics/IsaacLab`, commit
-`3c6e67bb5c7ada942a6d1884ab69338f57596f77`. LeIsaac checkout:
-`/home/rynem8/robotics/leisaac`, commit prefix `24d3bcd`. Existing compatibility
+`3c6e67bb5c7ada942a6d1884ab69338f57596f77` (tag `v2.3.0`). Its internal
+Python package/extension version is **0.47.2**; this is a different version field
+from the Isaac Lab release tag, not a reason to reinstall. LeIsaac checkout:
+`/home/rynem8/robotics/leisaac`, commit
+`24d3bcd3f1e4585740fc79921782c41617237812`. Existing compatibility
 patch: Isaac Lab's `flatdict` requirement is 4.1.0. Preserve it.
 The complete installed learning packages are in
 [il_requirements.lock.txt](../configs/il_requirements.lock.txt).

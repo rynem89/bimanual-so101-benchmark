@@ -16,11 +16,13 @@ updated from actual commands; pending items are not completion claims.
 | Visible stationary GUI smoke | Three sensor panels created, all selector choices checked, 32 captures, **0 viewer task ticks**; visual usability pending human review |
 | Official LeRobot CLIs | Installed training and dataset-viz `--help` succeeded; no updates |
 | ACT/Diffusion configs | Both named 1-observation/64-prediction/8-execution recipes and saved-config resume flags parsed by the installed official config wrapper; CUDA resolved on GPU-enabled check; no model/optimizer constructed |
-| Full physical expert | Pending limited regression through new CLI |
-| Recorded-action physical replay | Pending one preserved nominal recording regression |
-| Camera motion / unchanged calibration | Frozen file hashes checked; new expert phase capture check pending; original exhaustive pilot continuity evidence preserved |
-| Documentation/examples | 138 internal links resolve; 39 example commands parse; all 49 maintained files inventoried |
-| Human visual checkpoint | Pending, consolidated scene/feed and expert inspection |
+| Full physical expert | 1/1 full-task success, zero forbidden contacts; independent evaluation **and complete transfer trace exactly match** preserved reference |
+| Recorded-action physical replay | 1/1 preserved nominal recording passed through shared physics; independent evaluation exactly matches its previous physical replay |
+| Camera motion / unchanged calibration | 51 phase samples /153 camera-pose checks passed frozen intrinsics, actual attachment and common 20 Hz boundary checks; original exhaustive pilot continuity evidence preserved |
+| Documentation/examples | 139 internal links resolve; 42 example commands parse; all 49 maintained files inventoried |
+| Raw pilot preservation | All 12 full raw byte digests, episode inventory and original QA/report hashes unchanged |
+| Actual gate rejection checks | Unauthorized collection, unaccepted pilot conversion, missing train data and missing checkpoint all rejected; no data/model/socket created |
+| Human visual checkpoint | Pending, consolidated scene/feed and raw-review usability inspection |
 
 ## Reproduce the cheap checks
 
@@ -60,9 +62,9 @@ not human layout acceptance. Snapshot PNGs exclude optical guides. Scene reports
 check frozen intrinsics and measured static camera-to-gripper attachment. Task
 physics is frozen after the standard reset.
 
-Limited full-task expert/replay regressions will use the new interface, without
-recording demonstrations. Source hashes and actual independent reports, not only
-process exits, will be recorded here before completion.
+The full-task expert/replay regressions below used the new interface without
+recording demonstrations. Their actual independent reports and source hashes
+establish the results, not only process exits.
 
 ## Official policy verification boundary
 
@@ -88,3 +90,89 @@ surface is enabled for computer use in this session, so browser layout/playback
 remain part of the consolidated human checkpoint. An attempted repository-wide
 loopback HTTP server was rejected by automatic approval for excessive local data
 exposure; it was not started. No workaround server or dataset upload was used.
+
+Environment metadata was read again: simulation Python 3.11.16, NumPy 1.26.0,
+SciPy 1.15.3, torch 2.7.0+cu128, LeIsaac 0.4.0; learning Python 3.12.15,
+NumPy 2.2.6, torch 2.7.1+cu128, LeRobot 0.6.1. Isaac Lab Git remains exactly
+the pinned `v2.3.0` commit; its internal package version is 0.47.2, now explained
+in the environment guide. No dependency or external checkout was changed.
+
+## Full expert regression result
+
+```bash
+python scripts/so101.py expert --exit-after \
+  --camera-preview outputs/repository_consolidation/expert_cameras \
+  --output outputs/repository_consolidation/expert
+```
+
+Visible Isaac, committed source `ae93781`, clean at launch. Process exit 0;
+`passed_requested_stage`, all seven controller success counts 1. Independent
+pickup/lift/handover/placement all true, failure null, zero forbidden contacts.
+Evaluator elapsed 153.183333 s; runner includes reset at 156.183333 s; process
+wall 359.532727 s. Peak joint speed 2.011003 rad/s, effort 1.349620 Nm, stable
+grip slip left/right 0.267299/0.286576 mm. Evaluation JSON and the entire transfer
+trace exactly equal the preserved `overview_v3_comparison` reference. This is a
+regression without lossless recording, not a collection-throughput improvement.
+
+The 51 actual three-camera phase captures passed independent frozen K/pose/parent
+checks and shared software policy-boundary checks. Both wrists moved through the
+trajectory while overhead stayed fixed. This is sparse sampling, not a new
+exhaustive sensor-frame continuity test; those original pilot proofs remain
+unchanged. Raw actions/observations/camera semantics and expert physics are untouched.
+
+The new `collect plan` and dry `collect run` were exercised: five fixed manifests
+were generated, 12 pilot launch commands printed, `executed: false`; no raw
+directory or run ledger was created. The consumed pilot was not recollected.
+
+## Recorded-action replay regression result
+
+```bash
+python scripts/so101.py replay \
+  --episode datasets/protocol_v1_pilot/pilot_008_20261023T171324135324Z \
+  --output outputs/repository_consolidation/replay --exit-after
+```
+
+Visible Isaac, process exit 0; all four independent stages true, failure null,
+zero forbidden contacts. Evaluator elapsed **150.350000 s**, process wall
+**217.673920 s**, episode wall **208.604351 s**. Every independent metric exactly
+matches the previous nominal physical replay. Targets were the original float32
+recorded actions through `BenchmarkEnv.step`; no expert plans/servo or physical
+state playback supplied the task. The final recorded settling tail is still
+omitted at first success; no pointwise-state equivalence is claimed.
+
+The report names `ae93781` with `tracked_source_dirty: true` because documentation
+was being updated during this run. Runtime source hashes match the committed
+interface version and all preserved control/physics/data files match `a5cdc18`.
+No attempt to relabel this diagnostic as clean training data was made.
+
+## Stationary-viewer final guard and human checkpoint
+
+After the physics regressions, only the new standalone viewer received an
+additional verification guard: read both robots' joints and the cube transform
+**directly from PhysX**, plus the independent simulator clock, before/after the
+render-only loop. A bounded headless recheck produced 41 captures with **0 s
+physical-time change, 0 rad joint change, 0 m cube translation and 0 quaternion
+change**. It rejects nonfinite readings as well as changes. This strengthens the
+stationary claim beyond an application step counter; established sensor functions
+and expert/replay algorithms remain unchanged.
+
+Five camera tests passed again in **0.010 s** and ten CLI/gate tests in **0.219 s**
+after this viewer addition. All scripts/tests compile. Full raw byte digests and
+baseline QA/report hashes remain unchanged for all 12 pilot episodes. GPU identity
+was read again: RTX 5090, driver 580.178.04, 32,607 MiB; no stack change.
+
+One consolidated **human usability** check remains (separate from accepting the
+12 pilot videos). In `leisaac-sim`, the prepared stationary window uses:
+
+```bash
+python scripts/so101.py scene --frames \
+  --snapshot-dir outputs/repository_consolidation/scene_human_review
+```
+
+Check the three actual feed panels/selector, both attached wrist sensors and
+overhead optical guides. The cube/robots must remain stationary after settling.
+Also open `outputs/repository_consolidation/nominal_review.html` locally and scrub
+the three images with their joint/action table. No browser surface is enabled for
+automated interaction here; do not mark layout/playback accepted until the owner
+reviews it. Close Isaac and report any problem. This does not grant pilot-data
+acceptance, further collection, training, deletion, merge or push permission.
