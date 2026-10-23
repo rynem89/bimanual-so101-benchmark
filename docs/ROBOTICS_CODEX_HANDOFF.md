@@ -1683,3 +1683,230 @@ matched their local originals, the four-demo frame sum was 11,986, and every
 tracked source/config/test file appeared in the README inventory. `git diff
 --check` passed. No runtime regression or learned-policy test was rerun for this
 documentation-only change.
+
+
+### Learning reset inventory — 23 October 2026
+
+Baseline f47c358 protected by local tag `reference/pre-il-camera-v2`; new branch
+`feat/il-camera-dataset-v2`. Physical recovery source fb408f5; 34 prior CPU tests.
+Historical configurations/statistics remain in POLICY_REVIEW_METADATA.json and
+failure outcomes above. No regression test references dataset/checkpoint artifacts.
+Verified ordinary local files/directories, no symlinks or nested mounts using
+lstat and /proc/self/mountinfo. No benchmark process active at deletion.
+
+| Path | Files | Logical bytes | Allocated bytes | Disposition |
+| --- | ---: | ---: | ---: | --- |
+| `datasets/lerobot_corrected_train4` | 9 | 446125083 | 446144512 | Authorized deletion |
+| `datasets/lerobot_initial_train` | 7 | 217890719 | 217907200 | Authorized deletion |
+| `datasets/lerobot_smoke` | 6 | 109930991 | 109936640 | Authorized deletion |
+| `datasets/raw_corrected_nominal` | 12221 | 229676722 | 256827392 | Authorized deletion |
+| `datasets/raw_production_train` | 11728 | 219946527 | 246358016 | Authorized deletion |
+| `datasets/raw_reference` | 1977 | 37462341 | 42086400 | Authorized deletion |
+| `datasets/raw_smoke` | 5911 | 110937040 | 124174336 | Authorized deletion |
+| `datasets/raw_train` | 11708 | 219288717 | 243822592 | Authorized deletion |
+| `datasets/raw_train_v2` | 8360 | 157353308 | 176783360 | Authorized deletion |
+| `datasets/raw_train_v2_corrected` | 72600 | 1362083487 | 1524039680 | Authorized deletion |
+| `datasets/raw_validation_v2_corrected` | 12112 | 226729922 | 253128704 | Authorized deletion |
+| `checkpoints/act_corrected_train4_4000` | 57 | 825557036 | 825724928 | Authorized deletion |
+| `checkpoints/act_initial_2ep_1000` | 21 | 375145592 | 375209984 | Authorized deletion |
+| `checkpoints/act_smoke` | 8 | 225008798 | 225030144 | Authorized deletion |
+| `checkpoints/diffusion_corrected_train4_4000` | 57 | 1801234120 | 1801420800 | Authorized deletion |
+| `checkpoints/diffusion_initial_2ep_1000` | 21 | 818713193 | 818790400 | Authorized deletion |
+| `checkpoints/diffusion_smoke` | 8 | 491206546 | 491233280 | Authorized deletion |
+| `outputs/policy_traces/diffusion_corrected4` | 514 | 9484200 | 10518528 | Proposed deletion only; retained |
+| `outputs/policy_traces/manual_act` | 2538 | 47671963 | 52043776 | Proposed deletion only; retained |
+
+Deletion completed: datasets/ and checkpoints/ recreated empty; no placeholders
+needed because these artifact directories remain ignored. Policy traces, all
+other output evidence, caches and external environments were retained.
+
+### Camera-v2 research and official training preparation — 23 October 2026
+
+Official sources consulted before camera implementation:
+- https://github.com/TheRobotStudio/SO-ARM100
+- https://github.com/TheRobotStudio/SO-ARM100/tree/main/Simulation/SO101/assets
+- https://github.com/TheRobotStudio/SO-ARM100/tree/main/Optional/SO101_Wrist_Cam_Hex-Nut_Mount_32x32_UVC_Module
+- https://isaac-sim.github.io/IsaacLab/v2.3.0/source/overview/core-concepts/sensors/camera.html
+- https://isaac-sim.github.io/IsaacLab/v2.3.0/source/tutorials/04_sensors/add_sensors_on_robot.html
+
+Mount assembly identifies the wrist-roll housing's hex-nut recesses. Local model
+mesh mapping places wrist_roll_follower under rigid gripper, not moving jaw.
+The upstream binary STL was inspected: 3,476 triangles, bounds and SHA recorded
+in assets/camera_mount/README.md, with Apache license. Assembly image URL returned
+404; no claim is made to have measured camera extrinsics from that image or CAD.
+Mesh is a reference only, not instantiated mass/collision geometry. Sensor offsets
+are explicitly initial simulation estimates. Camera properties and transforms
+are in policy_cameras.py and README, with no installed robot USD modifications.
+
+Official training/data sources:
+- https://huggingface.co/docs/lerobot/en/envhub_leisaac
+- https://huggingface.co/docs/lerobot/en/lerobot-dataset-v3
+- https://raw.githubusercontent.com/huggingface/lerobot/v0.6.1/src/lerobot/scripts/lerobot_train.py
+
+Installed LeRobot 0.6.1 CLI help ran successfully. Source inspection confirms
+policy optimizer/scheduler factories, EpisodeAwareSampler with policy-specific
+tail exclusion, checkpoint/resume handling and an optional episode evaluation
+split. This replaces the previous custom optimizer path with a command-preparation
+function that NEVER trains. Steps/batch size/evaluation choices are mandatory user
+inputs. Hub uploads and EnvHub environment evaluation are disabled in the printed
+command. Our task is not registered as an EnvHub environment; the external LeIsaac
+example is not a drop-in benchmark or a reason to alter the pinned installation.
+ACT uses its official conditional VAE/action loss and saved processors; Diffusion
+uses its official sequence indices, padding policy and optimizer/scheduler preset.
+Inference retains official select_action/pre/postprocessors through the socket.
+
+Disposable compatibility fixture: 48 synthetic constant-image frames, three
+640x480 RGB cameras, state24/action12, saved as official v3 image data in a temporary
+/tmp directory and removed when the check ended. This is a file-format unit
+fixture, not an expert demonstration or training dataset. Official ACT sequence
+reader returned actions[100,12], image[3,480,640]; Diffusion returned actions[64,12],
+images[2,3,480,640]. Log: outputs/controller/camera_v2_lerobot_contract.log.
+No model instantiated, no optimizer update, no checkpoint. Real-data training
+and official-checkpoint simulator inference remain gated and unverified.
+
+### Future synthetic demonstration assessment (not implemented)
+
+Sources:
+- https://isaac-sim.github.io/IsaacLab/v2.3.0/source/overview/imitation-learning/teleop_imitation.html
+- https://isaac-sim.github.io/IsaacLab/v2.3.0/source/overview/imitation-learning/skillgen.html
+- https://curobo.org/get_started/1_install_instructions.html
+- https://docs.isaacsim.omniverse.nvidia.com/5.1.0/replicator_tutorials/index.html
+
+Mimic requires a ManagerBasedRLMimicEnv-compatible task adapter and helpers for
+end-effector poses, target-pose/action conversion, gripper commands, object poses
+and subtask termination signals. Our five-axis arm cannot realize arbitrary
+6-DOF target poses, so reuse constrained IK with explicit infeasibility failures.
+Define left acquire/lift, carry-to-transfer, coordinated receiver acquisition,
+donor release/withdrawal, right transport/release and retreat. Cube-relative
+frames apply to acquisition, a shared transfer frame to the bimanual interval,
+and bin-relative frames to placement. Order constraints must prevent donor
+release before verified receiver support. Physical success remains independent.
+An initial future experiment would transform a few approved demonstrations to
+nearby feasible poses, with synchronized bimanual segments and full collision/
+contact checking. Do not assume automatic stitching preserves a grasp.
+
+SkillGen adds motion-planned free-space bridges to the demonstrated skills.
+Lab 2.3's instructions pin cuRobo ebb71702f3f70e767f40fd8e050674af0288abe8 and discuss
+CUDA 12.8; generic cuRobo install docs refer to older stacks. Neither is an
+installation authorization. A dual-arm robot configuration, collision spheres,
+world conversion, payload transform/attachment semantics and planner-to-joint-
+target adapter need implementation and testing. Payload attachment in a planner
+must not become a physical constraint on the cube. RTX5090 sm120 extensions,
+Torch/CUDA ABI compatibility and five-axis pose feasibility are unresolved risks.
+Planning estimate, not measured work: Mimic adapter/annotation is several engineer
+days to weeks; robust coordinated SkillGen/cuRobo integration is additional weeks,
+not a configuration toggle. No cuRobo software was installed.
+
+Replicator can later vary lighting, materials and backgrounds with fixed seeds
+and documented ranges, while keeping geometry/contacts fixed. It augments pixels;
+it does not supply valid manipulation trajectories or repair invisible grasps.
+A small controlled appearance experiment after camera acceptance is lower effort
+(roughly days), but must check RGB/physics synchronization and visibility again.
+
+### Camera-v2 verification and human review checkpoint — 23 October 2026
+
+Final production changes: policy_cameras.py configures the fixed overview and
+both sensors under /World/envs/env_0/{Left,Right}_Robot/gripper/{left,right}_wrist.
+Sensor position in the rigid gripper link: (0.0141,-0.045,0.005) m. ROS optical
+quaternion wxyz: (0,0,0.9756376988650908,0.21938796811409378), aimed at the calibrated
+grasp region (0.0141,0,-0.09) m. ROS optical +X is negative parent X; +Y down,
++Z forward. Projection: 640x480 RGB, focal 12 mm, horizontal aperture20.955 mm,
+fx=fy366.4996338px, principal point(320,240), horizontal FOV82.25005degrees,
+clip0.01–10m. These are initial simulation estimates, not measured real hardware.
+The upstream mount supports a32mm UVC module; neither its lens nor bracket-to-link
+registration is calibrated here. No physical mount mass/collision geometry added.
+
+Default pinned Isaac camera world-pose reads were stale against the measured
+articulation. Disabling Fabric did not fix the issue. A Fabric read also exposed
+an upstream Warp dtype error with explicit int64 camera indices; reading all
+view indices avoids that error. A narrow project-owned subclass reads live Fabric
+poses. Before each captured observation, sensor-only Fabric world transforms are
+synchronized from the measured PhysX link and constant mounting offset. Actual
+camera poses are then checked independently: translation atol2e-5m and rotation
+matrix atol2e-4, rtol0. Robot/object physical state writes are unchanged. This uses
+pinned private camera _view/_update_poses interfaces and must be reviewed if the
+simulator is ever upgraded; installed packages were not patched.
+
+Failed camera prerequisites/diagnostics remain under outputs/controller prefixes
+camera_v2_nominal, camera_v2_diagnostic, camera_v2_checked, camera_v2_usd,
+camera_v2_fabric, camera_v2_fabric_checked, camera_v2_live_link and
+camera_v2_local_transform_probe. They are not successful manipulation tests or
+demonstration-generation runs. No failing attachment tolerance was relaxed.
+
+Complete nominal physics test, exit0:
+
+```bash
+source /home/rynem8/miniforge3/etc/profile.d/conda.sh
+conda activate leisaac-sim
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+python scripts/run_manipulation.py --headless --cpu-threads 8 --stage full \
+  --motion-mode continuous --expert-hz 20 --grip-feedback-from-lift \
+  --camera-preview outputs/camera_v2/synchronized \
+  --output-dir outputs/controller/camera_v2_synchronized
+```
+
+Do not rerun into the same preview directory. Log camera_v2_synchronized.log;
+report camera_v2_synchronized/full_20261023T085954936832Z.json. Independent pickup,
+lift, handover and placement all true;153.1833333simulated seconds, zero forbidden
+collisions, peak2.011003rad/s and1.349620Nm. Stable grasp slip0.2673/0.2866mm for
+left/right. Authored acceleration/jerk limits still absent; measured quantities
+are not certified limits. The report preserves dirty source hashes from the
+working tree at execution, baseline revisionf47c358; it does not assert that the
+uncommitted camera code was already part of that historical commit.
+
+51 synchronized three-view snapshots cover26phases, with each saved sample
+validated at (physics_step-reset_origin)%3==0. This is a sparse camera audit,
+not a contiguous20Hz recording. Eight representative phases are combined in
+outputs/camera_v2/synchronized/review_contact_sheet.jpg. Each original row is
+1920x508 with overview,left_wrist,right_wrist. audit.json includes actual poses,
+intrinsics and physical ticks. Tensor RGB validity, ordering path, dimensions,
+missing cameras and schedule checks are enforced; no pixel-based visibility or
+occlusion score is claimed. Cube visibility and housing/other-arm occlusion need
+human judgment. Overview transfer nears its lower edge; initial occlusion remains.
+
+After the full run, the optional fixed front diagnostic was added (excluded from
+policy features) and passed a separate reset/model test, exit0:
+`python scripts/run_manipulation.py --headless --cpu-threads 8 --stage model
+--camera-preview outputs/camera_v2/front_check --diagnostic-front
+--output-dir outputs/controller/camera_v2_front_check`.
+Default camera configuration stayed unchanged; the front option was not part of
+the full-task run. File camera_v2_front_check.log preserves the result.
+
+CPU verification:
+
+```bash
+source /home/rynem8/miniforge3/etc/profile.d/conda.sh
+conda activate leisaac-sim
+USD_LIB="$CONDA_PREFIX/lib/python3.11/site-packages/isaacsim/extscache/omni.usd.libs-1.0.1+69cbf6ad.lx64.r.cp311"
+export PYTHONPATH="scripts:$USD_LIB"
+export LD_LIBRARY_PATH="$USD_LIB/bin:$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python -m unittest discover -s tests -v
+```
+
+Baseline34/34 in68.918s (camera_v2_baseline_tests.log). Final37/37 in69.868s
+(camera_v2_commit_tests.log), including wrong-parent/rotation rejection,
+missing/bad RGB and invalid clock tests. Camera attachment comparison was factored
+without changing tolerances after the physical run; final CPU tests passed.
+Compilation, launcher/prepare-training help and diff checks also passed.
+
+Additional retained artifact inventory: outputs/huggingface40files775,889,478
+logical bytes (cache); outputs/torch1file46,830,571bytes, pretrained ImageNet
+resnet18-f37072fd.pth. These lie outside the two deletion-authorized trees and
+were not deleted. Previously inventoried policy traces total57,156,163bytes;
+proposed cleanup is only outputs/policy_traces/diffusion_corrected4 and manual_act,
+not executed. Other output evidence is retained. datasets/ and checkpoints/
+verified empty again after all tests; format fixtures used /tmp, not these trees.
+
+No deterministic model/planner/evaluator physics criteria or installed USD asset
+were changed. dataset_io.py and all prior tests are retained. Converter dimensions
+now come from metadata; attempted failure reasons and a quality summary remain in
+conversion.json. Manual recording additionally requires --authorize-recording.
+Custom optimizer training code was replaced with official command preparation;
+source history retains it. No learning source files or useful tests were deleted.
+
+Camera approval is pending. Exact GUI command is in README. The next action is
+human inspection of all three policy views; no new dataset collection or training
+is authorized by merely accepting the cameras. No remote push is authorized in
+this assignment. No trained-model success, hardware calibration, automatic
+occlusion certification, Mimic/SkillGen integration or new distribution coverage
+is claimed.

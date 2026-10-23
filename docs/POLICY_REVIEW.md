@@ -1,3 +1,11 @@
+# Camera-v2 reset: current review status
+
+As of 23 October 2026 all previous datasets and checkpoints were deliberately
+deleted. The material below is HISTORICAL: its paths and training commands no
+longer describe runnable current artifacts. Metadata is retained for audit only.
+Current camera and learning procedures are in README.md. No training or dataset
+collection is authorized until the new camera and demonstration gates pass.
+
 # ACT and Diffusion: implementation and training review
 
 This document explains the existing implementation and completed training runs.

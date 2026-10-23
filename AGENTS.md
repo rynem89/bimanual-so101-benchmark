@@ -22,6 +22,14 @@ Read `README.md` (if present) and `docs/ROBOTICS_CODEX_HANDOFF.md` at the start 
 - At milestone end provide: what works (proven), what doesn't (not proven), measured results, files changed and why, test evidence, current Git status/commit, user action required, and next milestone. **Don't turn every answer into a long tutorial**: provide compact explanation and a "Learning notes / code map" section for deeper self-study in another chat.
 - Research official documentation for relevant APIs and compatibility. Do not install or upgrade Isaac Sim/Lab/LeIsaac/CUDA/torch/NVIDIA/ROS/MoveIt or modify system settings without explicit consent. Preserve `leisaac-sim`.
 
+## Human-controlled learning gates
+- Never collect demonstrations or execute optimizer updates without explicit user authorization for that session.
+- Camera tensors must pass attachment/timing checks and human visual approval before collection.
+- Demonstrations must pass visual/data-quality review and independent task evaluation before training.
+- Camera inspection snapshots under outputs/ are diagnostics, not training demonstrations.
+- Preserve failed-generation counts; never narrow distributions silently.
+- Current camera-v2 assignment: stop for human camera approval; no dataset collection, training, or remote push.
+
 ## Current order of work
 1. Geometry/TCP: independently verify actual opposing finger surfaces, real aperture for 40-mm cube, jaw angles and TCP transform (the CSV collision bounds currently missing). Treat mesh AABBs as proxies only; don't certify physical contact from AABB.
 2. IK feasibility for pre-grasp target, with pose orientation feasibility (SO-101 arm has 5 controlled arm joints); offline check first.

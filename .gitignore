@@ -41,3 +41,6 @@ dist/
 .env.*
 *.key
 *.pem
+# Learning artifacts stay local; recreate empty roots as needed.
+.cache/
+wandb/
