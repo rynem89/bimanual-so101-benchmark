@@ -22,6 +22,118 @@ SCRIPT_SHA256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 from dataset_io import JOINT_ORDER, TASK, validate_episode
 
+RECIPES = Path(__file__).resolve().parents[1]/'configs/policy_training.json'
+
+
+def file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def training_command(args):
+    """Resolve a named recipe into the installed official trainer, without creating a model."""
+    import sys
+    recipes=json.loads(RECIPES.read_text())
+    if args.config not in recipes['recipes']:
+        raise ValueError(f'Unknown recipe {args.config}; choose {list(recipes["recipes"])}')
+    recipe=recipes['recipes'][args.config]
+    command=[sys.executable,'-m','lerobot.scripts.lerobot_train']
+    if args.resume:
+        if not args.resume.is_file():raise ValueError('Resume requires an existing train_config.json')
+        command += ['--config_path='+str(args.resume.resolve()),'--resume=true']
+    else:
+        command += ['--policy.type='+args.policy]
+    settings={'dataset.repo_id':'local/so101','dataset.root':str(args.dataset.resolve()),
+              'output_dir':str(args.output.resolve()),'seed':args.seed,**recipe['common'],**recipe[args.policy]}
+    command += ['--'+key+'='+(value if isinstance(value,str) else json.dumps(value)) for key,value in settings.items()]
+    return command
+
+
+def parse_official_training(command):
+    """Use LeRobot's actual parser but replace its train function with a config return.
+
+    No dataset loader, network, model, optimizer or scheduler is constructed.
+    This checks supported CLI fields and policy dataclass constraints, not learning.
+    """
+    import sys
+    from importlib.metadata import version
+    if version('lerobot')!='0.6.1':raise ValueError('Preserve the installed LeRobot 0.6.1 lock')
+    from lerobot.configs import parser
+    from lerobot.configs.train import TrainPipelineConfig
+    from lerobot.policies.act.configuration_act import ACTConfig
+    from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
+
+    def configuration_only(cfg):
+        return cfg
+
+    # LeRobot 0.6.1 reads concrete annotations with inspect.getfullargspec;
+    # this module uses postponed annotations, so supply the actual dataclass.
+    configuration_only.__annotations__['cfg']=TrainPipelineConfig
+    configuration_only=parser.wrap()(configuration_only)
+
+    previous=sys.argv
+    try:
+        sys.argv=[command[2],*command[3:]]
+        return configuration_only()
+    finally:sys.argv=previous
+
+
+def training_dataset_proof(dataset):
+    """Reject pilot, held-out, legacy or unaccepted conversion metadata before training."""
+    from demonstration_pipeline import CALIBRATION_SHA256
+    if not (dataset/'meta/info.json').is_file() or not (dataset/'conversion.json').is_file():
+        raise ValueError(f'No accepted converted training dataset at {dataset}; complete human QA and conversion first')
+    info=json.loads((dataset/'meta/info.json').read_text())
+    conversion=json.loads((dataset/'conversion.json').read_text())
+    quality=conversion.get('accepted_quality_report',{})
+    accepted=[row for row in quality.get('episodes',[]) if row.get('accepted')]
+    if (conversion.get('split')!='train' or not quality.get('ready_for_conversion')
+        or quality.get('partition')!='train' or quality.get('camera_config_sha256')!=CALIBRATION_SHA256
+        or not quality.get('ledger_complete') or not accepted
+        or any(not row.get('automatic_pass') or not row.get('digest') for row in accepted)):
+        raise ValueError('Require human-accepted train conversion; pilot/validation/held-out and legacy data are forbidden')
+    if {row['path'] for row in accepted}!={row['raw'] for row in conversion.get('accepted_episodes',[])}:
+        raise ValueError('Converted provenance differs from the accepted raw episode inventory')
+    expected={f'observation.images.{name}' for name in ('overview','left_wrist','right_wrist')}
+    if {key for key in info['features'] if key.startswith('observation.images.')}!=expected:
+        raise ValueError('Require exactly the three approved policy cameras')
+    if (info['fps']!=20 or info['features']['action']['shape']!=[12]
+        or info['features']['observation.state']['shape']!=[24]
+        or any(info['features'][name]['shape']!=[480,640,3] for name in expected)):
+        raise ValueError('Converted state/action/RGB contract differs from the frozen benchmark')
+    if info.get('total_episodes')!=len(conversion.get('accepted_episodes',[])):
+        raise ValueError('Converted episode inventory differs from accepted provenance')
+    return dict(conversion_sha256=file_sha256(dataset/'conversion.json'),
+                dataset_info_sha256=file_sha256(dataset/'meta/info.json'))
+
+
+def train_official(args):
+    """Preflight by default; actual updates require separate user authorization and hashes."""
+    import shlex
+    import subprocess
+    command=training_command(args)
+    print('Official LeRobot command (preflight only unless explicitly authorized):',flush=True)
+    print(shlex.join(command),flush=True)
+    config=parse_official_training(command)
+    if config.policy.type!=args.policy:raise ValueError('Resume policy does not match selected policy')
+    proof=training_dataset_proof(args.dataset)
+    if args.output.exists() and not args.resume:raise FileExistsError('Choose a new training output directory')
+    binding=dict(approved_training=True,policy=args.policy,recipe=args.config,
+        recipe_sha256=file_sha256(RECIPES),dataset_root=str(args.dataset.resolve()),
+        output_root=str(args.output.resolve()),seed=args.seed,**proof,
+        resume_config_sha256=file_sha256(args.resume) if args.resume else None)
+    print(json.dumps(dict(official_config_parsed=True,accepted_train_metadata_checked=True,
+        executed=False,resolved_device=config.policy.device,required_approval=binding,
+        note='No model/optimizer constructed; this does not establish data usefulness or policy success.'),indent=2),flush=True)
+    if not args.execute:return
+    if config.policy.device!='cuda':raise ValueError('CUDA is required for this recipe; do not silently train on CPU')
+    if not args.authorize_training or args.approval is None:
+        raise ValueError('Execution requires separate session authorization, --authorize-training and --approval')
+    approval=json.loads(args.approval.read_text())
+    if any(approval.get(key)!=value for key,value in binding.items()) or not approval.get('reviewer') or not approval.get('date'):
+        raise ValueError('Training approval must bind reviewer/date and this exact data, recipe, policy, seed and output')
+    # Only the official process can perform updates; the adapter owns no optimizer.
+    raise SystemExit(subprocess.run(command,check=False).returncode)
+
 
 def convert(args):
     from PIL import Image
@@ -133,6 +245,10 @@ def prepare_training(args):
 
 
 def serve(args):
+    if not (args.checkpoint/'model.safetensors').is_file() or not (args.checkpoint/'config.json').is_file():
+        raise ValueError('A real trained pretrained_model directory is required; no checkpoint exists in the reset pipeline')
+    saved=json.loads((args.checkpoint/'config.json').read_text())
+    if saved.get('type')!=args.method:raise ValueError('Checkpoint policy type differs from --method')
     import torch
     from multiprocessing.connection import Listener
     from lerobot.policies.factory import make_pre_post_processors
@@ -211,6 +327,13 @@ def main():
     p.add_argument('--steps',type=int,required=True);p.add_argument('--batch-size',type=int,required=True)
     p.add_argument('--validation-fraction',type=float,required=True);p.add_argument('--eval-steps',type=int,required=True)
     p.set_defaults(function=prepare_training)
+    p=commands.add_parser('train',help='Named official recipe: config/data preflight by default; explicitly gated execution')
+    p.add_argument('--policy',choices=('act','diffusion'),required=True)
+    p.add_argument('--config',default='matched-v1');p.add_argument('--dataset',type=Path,required=True)
+    p.add_argument('--output',type=Path,required=True);p.add_argument('--seed',type=int,choices=(17,29,43),default=17)
+    p.add_argument('--resume',type=Path);p.add_argument('--execute',action='store_true')
+    p.add_argument('--authorize-training',action='store_true');p.add_argument('--approval',type=Path)
+    p.set_defaults(function=train_official)
     p=commands.add_parser('serve');p.add_argument('--checkpoint',type=Path,required=True)
     p.add_argument('--method',choices=('act','diffusion'),default='act');p.add_argument('--socket',type=Path,required=True)
     p.add_argument('--trace-dir',type=Path,help='Optional ignored output directory for pre-action proprioception/targets')
@@ -218,7 +341,9 @@ def main():
     p.set_defaults(function=serve)
     args=parser.parse_args()
     if getattr(args,'trace_images',False) and not args.trace_dir:parser.error('--trace-images requires --trace-dir')
-    args.function(args)
+    try:args.function(args)
+    except (ValueError,FileNotFoundError,FileExistsError) as error:
+        raise SystemExit('[BLOCKED] '+str(error)) from None
 
 
 if __name__=='__main__':main()

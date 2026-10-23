@@ -1,3 +1,14 @@
+# Historical engineering archive
+
+> Preserved through the published `a5cdc18` baseline. This file is historical
+> evidence, not a current work order or operating guide. Earlier claims, commands,
+> branch names and permissions describe their dated context and may be obsolete.
+> Start with [README](../README.md), [current status](STATUS.md),
+> [getting started](GETTING_STARTED.md) and [the code map](ARCHITECTURE.md).
+> No historical instruction authorizes new collection, training, deletion or push.
+
+---
+
 # Project handoff — Simulation-first bimanual SO-101
 Updated 2026-10-23. Verify local files and current Git state before acting.
 

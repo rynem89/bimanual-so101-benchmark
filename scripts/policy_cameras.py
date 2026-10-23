@@ -320,6 +320,147 @@ def build_recommended_review(root: Path, profile: str):
     (root/'proposed_calibration.json').write_text(json.dumps(calibration,indent=2))
 
 
+def inspect_scene(layout, args):
+    """Stationary viewer using the exact task assets and camera capture interface.
+
+    Reset performs the established three-second settling hold. Thereafter only
+    rendering advances: no expert, action sequence, recording or task execution.
+    Optical guides are display-only and hidden while the actual RGB is captured.
+    """
+    import gc
+    import time
+    from pxr import Gf, UsdGeom
+    import omni.usd
+    from benchmark_env import BenchmarkEnv
+    from so101_model import SO101Model, calibrate
+
+    if args.snapshot_dir and args.snapshot_dir.exists():
+        raise FileExistsError(args.snapshot_dir)
+    model = SO101Model(layout.ROBOT_USD)
+    calibrate(model)  # Mesh-derived TCP only; never solves or executes an IK path.
+    sim = layout.SimulationContext(layout.sim_utils.SimulationCfg(device=layout.args.device))
+    cfg = layout.BimanualSceneCfg(num_envs=1, env_spacing=2.)
+    configure_cameras(cfg)
+    cfg.left_arm.init_state.pos = layout.LEFT_BASE_M
+    cfg.right_arm.init_state.pos = layout.RIGHT_BASE_M
+    cfg.left_arm.spawn.activate_contact_sensors = True
+    cfg.right_arm.spawn.activate_contact_sensors = True
+    cfg.cube.spawn.activate_contact_sensors = True
+    for name in ('table', 'bin_floor', 'bin_left_wall', 'bin_right_wall', 'bin_front_wall', 'bin_back_wall'):
+        getattr(cfg, name).spawn.rigid_props = layout.sim_utils.RigidBodyPropertiesCfg(
+            kinematic_enabled=True, disable_gravity=True)
+    scene = layout.InteractiveScene(cfg)
+    sim.reset()
+    sim.set_camera_view(eye=(.8, .9, .7), target=(0., -.12, .10))
+    env = BenchmarkEnv(sim, scene, model, layout)
+    window = None
+    try:
+        env.reset()
+        images = env.capture_images()
+        metadata = env.camera_metadata()
+        from demonstration_pipeline import check_camera
+        for name, camera in metadata.items():
+            check_camera(camera, name)
+        initial_step = env.total_steps
+        stage = omni.usd.get_context().get_stage()
+        guides = UsdGeom.Xform.Define(stage, '/World/InspectionGuides')
+
+        def line(name, points, colour):
+            curve = UsdGeom.BasisCurves.Define(stage, '/World/InspectionGuides/' + name)
+            curve.CreateTypeAttr('linear')
+            curve.CreateCurveVertexCountsAttr([2])
+            curve.CreatePointsAttr([Gf.Vec3f(*map(float, point)) for point in points])
+            curve.CreateWidthsAttr([.0015])
+            curve.CreateDisplayColorAttr([Gf.Vec3f(*colour)])
+
+        for name, camera in metadata.items():
+            position = np.array(camera['position_world_m'])
+            rotation = quaternion_rotation(camera['quaternion_ros_wxyz'])
+            line(name + '_optical_Z', [position, position + .10 * rotation[:, 2]], (1., .8, .1))
+            if args.frames:
+                for axis, colour in enumerate(((1., 0., 0.), (0., 1., 0.), (0., .4, 1.))):
+                    line(name + '_axis_' + str(axis), [position, position + .035 * rotation[:, axis]], colour)
+        if args.frames:
+            frames = {'world': np.eye(4), 'left_base': model.base.copy(), 'right_base': model.base.copy(),
+                      'left_TCP': env.frame.tcp[0], 'right_TCP': env.frame.tcp[1]}
+            frames['right_base'][0, 3] = .25
+            for name, pose in frames.items():
+                for axis, colour in enumerate(((1., 0., 0.), (0., 1., 0.), (0., .4, 1.))):
+                    line(name + str(axis), [pose[:3, 3], pose[:3, 3] + .06 * pose[:3, axis]], colour)
+
+        providers = {}
+        if not layout.args.headless:
+            import omni.ui as ui
+            window = ui.Window('SO-101 actual policy camera feeds', width=1020, height=340)
+            groups = {}
+            with window.frame:
+                with ui.VStack(spacing=6):
+                    ui.Label('Stationary inspection: no expert or recording. Optical guides are excluded from RGB.')
+                    selector = ui.ComboBox(0, 'All cameras', *NAMES, height=25)
+                    with ui.HStack(spacing=8):
+                        for name in NAMES:
+                            with ui.VStack() as group:
+                                groups[name] = group
+                                ui.Label(name, height=22)
+                                providers[name] = ui.ByteImageProvider()
+                                ui.ImageWithProvider(providers[name], width=320, height=240)
+
+            def select_camera(item_model, item):
+                choice = item_model.get_item_value_model().as_int
+                for index, name in enumerate(NAMES, 1):
+                    groups[name].visible = choice in (0, index)
+            selector.model.add_item_changed_fn(select_camera)
+            for choice in range(4):
+                selector.model.get_item_value_model().set_value(choice)
+                if any(groups[name].visible != (choice in (0, index)) for index, name in enumerate(NAMES, 1)):
+                    raise RuntimeError('Camera selector did not update the feed panels')
+            selector.model.get_item_value_model().set_value(0)
+
+        if args.snapshot_dir:
+            args.snapshot_dir.mkdir(parents=True)
+            for name, pixels in images.items():
+                Image.fromarray(pixels).save(args.snapshot_dir / (name + '.png'))
+        print('[SCENE] Settled and frozen. Three actual RGB feeds enabled; no expert or recording.', flush=True)
+        print('[SCENE] Robot: existing LeIsaac USD. Cameras: gripper children. Mount STL is not physical geometry.', flush=True)
+        print('[SCENE] Yellow guides: optical +Z; optional axes: X red / Y green / Z blue. Close Isaac to exit.', flush=True)
+        started = time.monotonic()
+        captures = 0
+        while layout.app.is_running() and (not args.duration or time.monotonic() - started < args.duration):
+            guides.MakeInvisible()
+            images = env.capture_images()
+            current_metadata = env.camera_metadata()
+            for name, camera in current_metadata.items():
+                check_camera(camera, name)
+            for name, provider in providers.items():
+                rgba = np.dstack((images[name], np.full((HEIGHT, WIDTH, 1), 255, dtype=np.uint8)))
+                provider.set_bytes_data(rgba.flatten().data, [WIDTH, HEIGHT])
+            guides.MakeVisible()
+            sim.render()
+            captures += 1
+            time.sleep(.05)
+        report = dict(schema='so101-stationary-scene-check-1.0', calibration_sha256=CALIBRATION_SHA256,
+                      cameras=metadata, reset_physics_steps=initial_step,
+                      viewer_physics_steps=env.total_steps - initial_step, rendered_captures=captures,
+                      expert_started=False, recording_started=False, frames_shown=args.frames,
+                      gui_panel_created=window is not None,
+                      gui_selection_checked=window is not None,
+                      note='Static attachment/intrinsics checks only; GUI usability still requires human review.')
+        if args.snapshot_dir:
+            (args.snapshot_dir / 'scene_check.json').write_text(json.dumps(report, indent=2) + '\n')
+        if report['viewer_physics_steps'] != 0:
+            raise RuntimeError('Stationary viewer advanced task physics')
+        print('[SCENE RESULT]', json.dumps(report), flush=True)
+    finally:
+        if window is not None:
+            window.destroy()
+        env.cameras.clear()
+        scene.sensors.clear()
+        gc.collect()
+        sim.clear_all_callbacks()
+        sim.clear_instance()
+        layout.app.close(wait_for_replicator=False)
+
+
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser(description='Rebuild camera review figures from saved diagnostic RGB; never simulate or collect.')

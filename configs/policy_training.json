@@ -1,0 +1,35 @@
+{
+  "schema": "so101-official-training-recipes-1.0",
+  "status": "Proposed recipes only; separate accepted data and explicit training authorization required",
+  "lerobot_version": "0.6.1",
+  "recipes": {
+    "matched-v1": {
+      "description": "Controlled horizon comparison proposed in DEMONSTRATION_PROTOCOL; official per-policy architectures and optimization presets",
+      "common": {
+        "steps": 100000,
+        "batch_size": 8,
+        "save_freq": 10000,
+        "num_workers": 4,
+        "cudnn_deterministic": true,
+        "dataset.eval_split": 0.0,
+        "dataset.video_backend": "pyav",
+        "dataset.image_transforms.enable": false,
+        "eval_steps": 0,
+        "env_eval_freq": 0,
+        "wandb.enable": false,
+        "save_checkpoint_to_hub": false,
+        "policy.push_to_hub": false,
+        "policy.device": "cuda",
+        "policy.use_amp": false,
+        "policy.n_obs_steps": 1,
+        "policy.n_action_steps": 8
+      },
+      "act": {"policy.chunk_size": 64},
+      "diffusion": {
+        "policy.horizon": 64,
+        "policy.drop_n_last_frames": 0,
+        "policy.do_mask_loss_for_padding": true
+      }
+    }
+  }
+}

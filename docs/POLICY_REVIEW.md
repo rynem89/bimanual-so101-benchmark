@@ -1,3 +1,14 @@
+# Historical review of the earlier failed learning experiments
+
+> Archive, not current training or inference instructions. Its saved models/data
+> were removed during the previously authorized reset. Names such as
+> `current_models` in the unchanged metadata snapshot mean current at that old
+> audit, not checkpoints available now. Preserve this record to understand the
+> earlier camera/data/method failures. Use [POLICIES](POLICIES.md) and
+> [STATUS](STATUS.md) for the current official pipeline and approval gates.
+
+---
+
 # Camera-v2 reset: current review status
 
 As of 23 October 2026 all previous datasets and checkpoints were deliberately

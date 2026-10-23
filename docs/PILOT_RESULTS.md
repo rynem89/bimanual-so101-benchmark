@@ -1,14 +1,14 @@
 # Physical 12-attempt pilot results — 2026-10-23
 
-Only this pilot was authorized. The protocol remains provisional; final collection, augmentation and training are paused. All expert attempts and three physical replay tests ran in the visible Isaac simulator on committed source `877f9b1`, with the pinned stack and approved cameras unchanged. No failed attempt was regenerated.
+This document is the measured pilot-results record; [STATUS](STATUS.md) holds current permissions and decisions. All expert attempts and three physical replay tests ran in the visible Isaac simulator on committed source `877f9b1`, with the pinned stack and approved cameras unchanged. No failed attempt was regenerated.
 
 ## Verdict and review
 
 **12/12 physical full-task successes; 12/12 automated data-QA passes; 0 automatic rejections; 12 pending human visual review.** All four independent stage flags passed in every case. All processes exited 0. No forbidden-contact violation (0.05 N detection threshold), controller/evaluator failure, failed grasp, unintentional drop or failure-recovery reset was reported. No unexpected reset was reported or indicated by the recording clocks; each process performed its declared initial reset. These are actual PhysX task results, not IK/geometry proxies.
 
-- [Consolidated visual review](../outputs/protocol_v1_pilot_report/index.html): videos, phase sheets and original full-resolution PNGs.
-- [Machine-readable report](../outputs/protocol_v1_pilot_report/pilot_report.json) and [per-case CSV](../outputs/protocol_v1_pilot_report/pilot_cases.csv).
-- [Automated QA and human-review template](../outputs/protocol_v1_pilot_qa/quality.json), `human_review_template.json` in the same folder.
+- Local consolidated visual review: `outputs/protocol_v1_pilot_report/index.html` — videos, phase sheets and original full-resolution PNGs.
+- Local machine-readable report: `outputs/protocol_v1_pilot_report/pilot_report.json`; per-case table: `pilot_cases.csv` in the same folder.
+- Local automated QA: `outputs/protocol_v1_pilot_qa/quality.json`; `human_review_template.json` in the same folder.
 - Raw attempts: `datasets/protocol_v1_pilot/`; collection commands/start-finish ledger, authorization and logs: `outputs/protocol_v1_pilot_run/`. These artifacts remain local and ignored by Git.
 
 Expand each case in the review. Check cube/gripper detail at grasp, receiver acquisition, donor release, right-only hold and bin release, plus full motion. Videos are diagnostic H.264 derivatives; original lossless RGB is linked for detail inspection. Do not infer physical contact or human acceptance from image nonblank checks.
@@ -79,7 +79,7 @@ Retain the tested primary support: **x [−0.350,−0.330] m, y [−0.052,−0.0
 
 After human data-quality acceptance and separate authorization, proceed with the proposed **100 train /20 validation** attempt manifests and fixed held-out evaluation set. Use nested smaller training subsets later if desired, retaining source-case splits. Do not jump to 500/1,000 until the first data/training/evaluation cycle demonstrates useful learning. The measured costs justify profiling lossless image writing and rendering before large scale; any optimization must preserve decoded RGB, synchronization and the controller. No optimization, augmentation or training was performed in this pilot.
 
-**Stop here for user review.** All 12 pilot attempts are consumed. No final collection, dataset augmentation, conversion into an accepted training corpus or optimizer updates are authorized. The user separately authorized publishing source and documentation on `feat/il-camera-dataset-v2` for GitHub review on 2026-10-23. The raw recordings and generated review media/reports remain local and ignored by Git; this tracked document contains the measured results for remote review.
+All 12 pilot attempts are consumed; human acceptance remains pending. [STATUS](STATUS.md) is the current approval authority. The raw recordings and generated review media/reports remain local and ignored by Git; this tracked document contains the measured results for remote review.
 
 ## Reproduce the report without collecting
 

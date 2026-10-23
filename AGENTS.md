@@ -1,42 +1,75 @@
 # Codex operating contract — bimanual SO-101 benchmark
 
-Read `README.md` (if present) and `docs/ROBOTICS_CODEX_HANDOFF.md` at the start of each new task. Treat repository code and measured results as source of truth; report conflicts. Main mission: **left SO-101 picks a cube -> transfers it in mid-air to right SO-101 -> right places cube in bin** under deterministic control, auto-reset and objective evaluation **before AI training**. Preserve the pinned Isaac Lab / LeIsaac stack.
+## Start here
 
-## Work autonomously, deliver milestones
-- Take ownership of a requested milestone end-to-end: inspect, plan, implement, test, diagnose and iterate. Do not stop after an exploratory script or ask for approval after every small edit. Batch dependent low-risk code changes into coherent milestones.
-- **Pause** for user action when: human simulator/visual inspection is required; missing physical facts prevent progress; a destructive/privileged operation or dependency/driver/OS change is contemplated; a proposed significant architecture change; or a nonrecoverable blocker. State exactly what the user should observe/do and the narrowest evidence needed. Do not claim physical grasp success from code compilation or proxy geometry.
-- Execute tests autonomously whenever local environment and permissions allow. When GUI cannot be operated, produce a headless automated test plus an exact reproducible GUI command and ask for one human verification per milestone, not per small diagnostic.
-- Avoid busywork, infinite retries and speculative broad rewrites. If blocked after a small number of evidence-based attempts, report failing layer and propose smallest next diagnostic.
+Read `README.md` and `docs/STATUS.md` at the start of each task, then the relevant
+linked guide. `docs/ROBOTICS_CODEX_HANDOFF.md` and `docs/POLICY_REVIEW.md` are
+historical evidence, not current commands or work orders. Trust repository code
+and measured results; report conflicts and update the current authority.
 
-## Git safety and hygiene
-- First inspect `git status`, branch, commits, ignore patterns and file inventory. Treat `main` as protected. Work on a purpose-specific feature branch or Codex worktree from a verified baseline; account for existing uncommitted files. Do not reset, clean, force-push, delete branches or overwrite uncommitted work.
-- Maintain a concise inventory distinguishing production code, tests, archived diagnostics, generated outputs and unknown files. **Do not blindly delete**: propose candidates with reasons; obtain user approval before removing anything tracked or ambiguous; remove untracked temporary artifacts only after inspection and with clear provenance. Prefer Git history for superseded diagnostics; archive only when genuinely needed, never to inflate files.
-- Preserve working scripts until replacement passes an equivalent objective test. Inspect diffs and tests. Commit small, meaningful verified milestones on the feature branch, never push to `main` or merge without explicit user approval. Publishing/pushing remote changes needs user authorization.
-- Never commit credentials, `.env` secrets, caches, venvs, Isaac binaries, USD giant assets, datasets, logs or generated temp outputs. Maintain `.gitignore`.
+The deterministic left pickup → mid-air right handover → basket placement task
+is established. Do not restart geometry/TCP/IK milestones or the consumed pilot.
+Next work is the repository-consolidation brief and its verification, followed
+by owner review. Human pilot acceptance remains pending; no accepted training
+corpus or trained model exists in the reset pipeline.
 
-## Engineering and learning contract
-- Minimal cohesive architecture; reusable scene, robot model, configuration, transforms, controllers, evaluation and tests only when needed. No unnecessary wrappers, frameworks, dependencies, notebooks, dozens of one-off probes or speculative files.
-- Document each maintained source file in **`README.md`** in a succinct file inventory (purpose, entry point, inputs/outputs, run command, status). Update it when adding/removing files and at milestones. Record exact commands, results, expected output, failures and environment locks in `docs/PROGRESS.md` / handoff docs; create only if absent and useful.
-- Code style: readable Python, typed APIs when helpful, concise meaningful comments/docstrings explaining frames, units, non-obvious mechanics, failure modes and external APIs. Avoid noise comments restating code. Explicitly distinguish meters/radians, world/base/TCP frames, actual measured vs desired state. Keep performance reasonable.
-- Fail tests when prerequisites fail. No `PASS` based only on command issued, endpoints without path validation, stationary "disturbance", or visual claims from mere transforms. Record quantitative tolerances and independent checks.
-- At milestone end provide: what works (proven), what doesn't (not proven), measured results, files changed and why, test evidence, current Git status/commit, user action required, and next milestone. **Don't turn every answer into a long tutorial**: provide compact explanation and a "Learning notes / code map" section for deeper self-study in another chat.
-- Research official documentation for relevant APIs and compatibility. Do not install or upgrade Isaac Sim/Lab/LeIsaac/CUDA/torch/NVIDIA/ROS/MoveIt or modify system settings without explicit consent. Preserve `leisaac-sim`.
+## Preserve the proven benchmark
 
-## Human-controlled learning gates
-- Never collect demonstrations or execute optimizer updates without explicit user authorization for that session.
-- Camera tensors must pass attachment/timing checks and human visual approval before collection.
-- Demonstrations must pass visual/data-quality review and independent task evaluation before training.
-- Camera inspection snapshots under outputs/ are diagnostics, not training demonstrations.
-- Preserve failed-generation counts; never narrow distributions silently.
-- Camera arrangement approved 2026-10-23: freeze `configs/policy_cameras.json`. The authorized 12-attempt pilot is complete (12 physical successes, 12 automatic QA passes; 3 selected physical replay passes). Stop for human review; protocol remains provisional. No further collection, augmentation or training until separately authorized. The user separately authorized a normal push of source/docs on `feat/il-camera-dataset-v2` for review on 2026-10-23; preserve `main` and keep datasets/weights/generated outputs local. Read `docs/PILOT_RESULTS.md` and the handoff.
+- Keep pinned `leisaac-sim` and `so101-il-py312` environments. Each shell needs its
+  own activation; use `docs/GETTING_STARTED.md`. No installs/upgrades, NVIDIA,
+  CUDA, OS, Isaac Sim/Lab or LeIsaac changes without explicit consent.
+- Preserve `configs/policy_cameras.json` and `configs/demonstration_protocol.json`
+  byte-for-byte. Their hashes are in `docs/STATUS.md`. Do not alter controller
+  algorithms, task physics/evaluator or action/observation semantics for cleanup.
+- No physical success claims from compilation, transforms, commanded phases or
+  offline planning. Use actual independent simulator evaluation and contact data.
+- Never collect demonstrations or execute optimizer updates without explicit user
+  authorization for that session and required approval records. The 12-attempt
+  pilot authorization is consumed. Preserve failures and declared denominators.
+- Cameras require attachment/timing checks and human image approval. Demonstrations
+  require automatic QA, independent physics evaluation and human quality review
+  before conversion/training. Diagnostic snapshots are not training data.
 
-## Current order of work
-1. Geometry/TCP: independently verify actual opposing finger surfaces, real aperture for 40-mm cube, jaw angles and TCP transform (the CSV collision bounds currently missing). Treat mesh AABBs as proxies only; don't certify physical contact from AABB.
-2. IK feasibility for pre-grasp target, with pose orientation feasibility (SO-101 arm has 5 controlled arm joints); offline check first.
-3. Collision-aware HOME -> PREGRASP, verify intermediate poses, cube untouched; deterministic reset.
-4. Physical cube acquisition, lift and hold with measurable contact/grasp evidence.
-5. Bimanual handover with both robot arms coordinated and verified transfer.
-6. Bin placement, retreat, complete repeated episodes, auto reset, success/failure metrics.
-7. Only then dataset generation, ACT, diffusion policy, VLA, benchmarking, sim-to-real.
+## Work autonomously within scope
 
-Follow `docs/ROBOTICS_CODEX_HANDOFF.md` for actual paths, states, documented limitations and exact environment activation. If that document conflicts with live results, trust live evidence and update the record.
+Inspect, implement, test and diagnose coherent milestones. Use the simple
+`scripts/so101.py` interface and existing modules; do not add a wrapper per action
+or invent a new framework. Use descriptive names, frame/unit docstrings and
+comments for non-obvious mechanics. Keep help lightweight and GUI the default.
+
+Pause only for required human visual inspection, missing physical facts, genuinely
+blocked work, destructive/privileged changes or significant architecture changes.
+Batch simulator observation into one consolidated checkpoint where practical.
+State the exact command, observation and narrowest missing evidence. Continue
+independent safe work while awaiting optional clarification.
+
+## Git and evidence
+
+Inspect status, branches, commits, tags, ignores and file inventory first. Work
+on `feat/repository-consolidation` from preserved `a5cdc18` for this milestone.
+Main is protected. Never reset/clean/force-push or overwrite uncommitted work.
+Commit coherent verified changes locally; no merge/push without new authorization.
+Present exact deletion candidates and obtain approval before removing tracked or
+ambiguous files, branches, tags, datasets, checkpoints or evidence. See
+`docs/REPOSITORY_AUDIT.md`; none of its proposals are authorized deletions.
+
+Never commit credentials, environments, binaries, generated outputs/logs, raw
+images/datasets or weights. Preserve `.gitignore` and local evidence. Source/docs
+publication never authorizes artifact upload or collection/training.
+
+## Documentation and verification
+
+README is the concise entrance; `docs/ARCHITECTURE.md` is the complete maintained
+file inventory and public-function map. Keep both accurate. Current gates belong
+only in `docs/STATUS.md`, environment locks in `docs/GETTING_STARTED.md`, measured
+pilot results in `docs/PILOT_RESULTS.md`, regression commands/results in
+`docs/VERIFICATION.md`. Do not append long chronological logs to the README or
+reactivate historical instructions.
+
+Run applicable CPU tests before expensive physical checks. Fail when prerequisites
+fail. Verify CLI help/defaults, dry runs, collection/training gates, official
+LeRobot config parsing, doc links and preserved hashes. Run limited expert and
+recorded-action physics regressions; do not regenerate the pilot or start training.
+Report proven behaviour, unverified limits, changed files, exact test evidence,
+Git state and the next human decision. Link the architecture/controller guides
+for learning rather than repeating a long tutorial in the final response.
