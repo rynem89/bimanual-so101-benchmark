@@ -204,12 +204,14 @@ def review_episode(args) -> int:
     payload["cameras"] = list(meta["cameras"])
     payload["joints"] = JOINT_ORDER
     payload["root"] = Path(os.path.relpath(args.episode.resolve(), args.output.parent.resolve())).as_posix()
+    payload["videos"] = {name: video["path"] for name,video in meta.get("videos",{}).items()}
+    payload["fps"] = meta["fps"]
     captures = args.episode / "captures.jsonl"
     payload["phases"] = [json.loads(line)["phase"] for line in captures.read_text().splitlines()] if captures.exists() else []
     source = json.dumps(payload, allow_nan=False).replace("</", "<\\/")
     page = """<!doctype html><meta charset="utf-8"><title>SO-101 raw episode review</title>
 <style>body{font:16px system-ui;margin:24px;background:#182027;color:#eee} .feeds{display:flex;gap:12px}
-.feeds figure{margin:0;width:32%}img{width:100%}table{border-collapse:collapse}td,th{padding:4px 16px;border-bottom:1px solid #526}
+.feeds figure{margin:0;width:32%}img,canvas{width:100%}table{border-collapse:collapse}td,th{padding:4px 16px;border-bottom:1px solid #526}
 input{width:75%}button{padding:8px}a{color:#9df}</style>
 <h1>Raw pre-action camera / state / action review</h1><p>EPISODE</p>
 <p>Diagnostic viewer only. Physical success and human data acceptance are separate. Angles: radians; velocities: rad/s.
@@ -218,13 +220,18 @@ Images and observations precede the displayed target, which is held for the next
 <div class="feeds" id="feeds"></div><table><thead><tr><th>Joint</th><th>Measured q</th><th>Measured qd</th><th>Next target</th></tr></thead><tbody id="rows"></tbody></table>
 <script>const d=PAYLOAD;const seek=document.querySelector('#seek');seek.max=d.action.length-1;
 const feeds=document.querySelector('#feeds');for(const name of d.cameras){const f=document.createElement('figure');
-const title=document.createElement('figcaption');title.textContent=name;f.append(title);const im=document.createElement('img');
-im.id=name;f.append(im);feeds.append(f);}const rows=document.querySelector('#rows');
-let request=0;async function show(){const i=Number(seek.value),id=++request;
-const images=await Promise.all(d.cameras.map(name=>new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>resolve([name,im.src]);im.onerror=()=>reject(new Error('Missing RGB: '+name));im.src=d.root+'/'+name+'/'+String(i).padStart(6,'0')+'.png';}))).catch(error=>{document.querySelector('#clock').textContent=error.message;return null;});
-if(!images||id!==request)return;for(const [name,src] of images)document.getElementById(name).src=src;
+const title=document.createElement('figcaption');title.textContent=name;f.append(title);
+if(d.videos[name]){const v=document.createElement('video');v.id='video_'+name;v.preload='auto';v.muted=true;v.playsInline=true;v.hidden=true;v.src=d.root+'/'+d.videos[name];f.append(v);const c=document.createElement('canvas');c.id=name;c.width=640;c.height=480;f.append(c);}
+else{const im=document.createElement('img');im.id=name;f.append(im);}feeds.append(f);}const rows=document.querySelector('#rows');
+async function frame(name,i){if(!d.videos[name])return new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>resolve([name,im]);im.onerror=()=>reject(new Error('Missing RGB: '+name));im.src=d.root+'/'+name+'/'+String(i).padStart(6,'0')+'.png';});
+const v=document.getElementById('video_'+name);if(v.readyState<1)await new Promise((resolve,reject)=>{v.addEventListener('loadedmetadata',resolve,{once:true});v.addEventListener('error',reject,{once:true});});
+const t=(i+.25)/d.fps;if(Math.abs(v.currentTime-t)>1e-6)await new Promise((resolve,reject)=>{v.addEventListener('seeked',resolve,{once:true});v.addEventListener('error',reject,{once:true});v.currentTime=t;});return [name,v];}
+let request=0,busy=false;async function show(){++request;if(busy)return;busy=true;try{while(true){const i=Number(seek.value),id=request;
+const images=await Promise.all(d.cameras.map(name=>frame(name,i)));if(id!==request)continue;
+for(const [name,im] of images){const view=document.getElementById(name);if(d.videos[name])view.getContext('2d').drawImage(im,0,0,view.width,view.height);else view.src=im.src;}
 document.querySelector('#clock').textContent=`Row ${i} / ${d.action.length-1} | physics step ${d.physics_step[i]} | ${d.time_s[i].toFixed(3)} s | ${d.phases[i]||'phase unavailable'}`;
-rows.replaceChildren();d.joints.forEach((name,j)=>{const tr=document.createElement('tr');for(const text of [name,d.state[i][j].toFixed(5),d.state[i][j+12].toFixed(5),d.action[i][j].toFixed(5)]){const td=document.createElement('td');td.textContent=text;tr.append(td);}rows.append(tr);});}
+rows.replaceChildren();d.joints.forEach((name,j)=>{const tr=document.createElement('tr');for(const text of [name,d.state[i][j].toFixed(5),d.state[i][j+12].toFixed(5),d.action[i][j].toFixed(5)]){const td=document.createElement('td');td.textContent=text;tr.append(td);}rows.append(tr);});break;}}
+catch(error){document.querySelector('#clock').textContent='RGB decode/seek error: '+error.message;}finally{busy=false;}}
 seek.oninput=show;let playing=false;document.querySelector('#play').onclick=async()=>{playing=!playing;if(!playing)return;
 while(playing&&Number(seek.value)<Number(seek.max)){await new Promise(resolve=>setTimeout(resolve,50));if(!playing)break;seek.value=Number(seek.value)+1;await show();}playing=false;};show();</script>"""
     page = page.replace("EPISODE", html.escape(str(args.episode))).replace("PAYLOAD", source)

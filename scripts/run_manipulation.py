@@ -34,6 +34,8 @@ parser.add_argument('--viewer-delay',type=float,default=0.,help='Optional wall s
 parser.add_argument('--suite',choices=('nominal','perturb','negative'),default='nominal')
 parser.add_argument('--case',default='nominal',help='Fixed cube pose from benchmark_core.EVALUATION_CASES')
 parser.add_argument('--record-dir',type=Path,help='Write 20 Hz RGB expert attempts, successes and failures')
+parser.add_argument('--record-format',choices=('mp4','png'),default='mp4',help='H.264 streams by default; png preserves legacy diagnostics')
+parser.add_argument('--success-count',type=int,help='Stop a recorded multi-case batch at this many independently successful episodes')
 parser.add_argument('--expert-hz',type=int,choices=(20,60),default=20)
 parser.add_argument('--grip-feedback-from-lift',action=argparse.BooleanOptionalAction,default=True,help='Apply the existing bounded force servo during lift/hold as well as transport')
 parser.add_argument('--cases-file',type=Path,help='Explicit named cube cases and split; all cases are attempted')
@@ -55,6 +57,8 @@ if options.compare_overviews and not options.camera_preview:parser.error('--comp
 if options.compare_overviews and (options.episodes!=1 or options.cases_file or options.suite!='nominal'):
     parser.error('Overview comparison uses one named case/episode per fresh diagnostic directory')
 if options.record_dir and not options.authorize_recording:parser.error('Recording requires camera approval and explicit --authorize-recording')
+if options.success_count is not None and (options.success_count<1 or not options.record_dir or not options.cases_file or options.stage!='full'):
+    parser.error('--success-count requires positive count, full stage, cases file and authorized recording')
 if options.camera_preview and (options.record_dir or options.policy_socket or options.replay):parser.error('Camera preview is expert-only and cannot record demonstrations')
 if options.record_dir or options.policy_socket or options.camera_preview:
     options.expert_hz=20
@@ -65,7 +69,7 @@ import carb
 import numpy as np
 from scipy.spatial.transform import Rotation
 from benchmark_env import BenchmarkEnv, configure_cameras
-from benchmark_core import EVALUATION_CASES, JointPath, CoordinatedJointPath, policy_boundary, quintic, trajectory_limits, transfer_metrics
+from benchmark_core import EVALUATION_CASES, JointPath, CoordinatedJointPath, policy_boundary, quintic, trajectory_limits, transfer_metrics, receiver_final_contact
 from so101_model import SO101Model, calibrate, jsonable, transform, apply, box_mesh, LINK_NAMES
 from so101_planning import (plan_pickup, plan_lift, plan_receiver_preposition, plan_transport, plan_receiver, plan_donor_clearance, plan_placement,
                            transport_fingerprint, CollisionWorld, fingerprint, valid_cache, CACHE_STATE_ATOL)
@@ -216,6 +220,8 @@ class Episode:
                 allowed |= side==other_side and frozenset((body,other)) in self.model.adjacent
             allowed |= (self.contact_allowed and target=='cube' and body in ('gripper','jaw')
                         and ('Left_Robot' if side=='left' else 'Right_Robot') in self.contact_arms)
+            allowed |= (side=='right' and target=='cube' and body in ('gripper','jaw')
+                        and receiver_final_contact(frame,self.phase,magnitude))
             if not allowed:forbidden.append((source,target,magnitude))
         if forbidden:
             self.failure_state={'phase':self.phase,'contacts':forbidden,'q_rad':self.measured_q(),
@@ -230,6 +236,8 @@ class Episode:
         return self.pad_forces['left']
 
     def step(self,target,check=True):
+        if options.success_count is not None and not layout.app.is_running():
+            raise KeyboardInterrupt('Collection viewer closed')
         target=target.copy()
         # Orientation changes alter gravity torque at the jaw. Retain measured
         # bilateral preload with bounded slow servo correction, not attachment.
@@ -440,6 +448,11 @@ class Episode:
             from dataset_io import EpisodeWriter
             from policy_cameras import CALIBRATION_SHA256, CALIBRATION_PATH
             cases_metadata=json.loads(options.cases_file.read_text()) if options.cases_file else {}
+            batch_hash=hashlib.sha256(options.cases_file.read_bytes()).hexdigest() if options.cases_file else None
+            manifest_hash=batch_hash
+            if len(cases_metadata.get('cases',[]))>1:
+                one_case=dict(cases_metadata,cases=[row for row in cases_metadata['cases'] if row['name']==self.case])
+                manifest_hash=hashlib.sha256((json.dumps(one_case,indent=2)+'\n').encode()).hexdigest()
             root=options.record_dir/f'{self.case}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")}'
             self.writer=EpisodeWriter(root,dict(case=self.case,configuration=EVALUATION_CASES[self.case],
                 cameras=self.env.camera_metadata(),image_shape=[480,640,3],motion_mode=options.motion_mode,split=self.split,
@@ -447,9 +460,9 @@ class Episode:
                 source_sha256=self.source_sha256,camera_config_sha256=CALIBRATION_SHA256,
                 camera_config_path=str(CALIBRATION_PATH),overview_profile=options.overview_profile,
                 protocol_sha256=cases_metadata.get('protocol_sha256'),
-                manifest_sha256=hashlib.sha256(options.cases_file.read_bytes()).hexdigest() if options.cases_file else None,
+                manifest_sha256=manifest_hash,batch_manifest_sha256=batch_hash,
                 physics_hz=60,expert_command_hz=20,controller='privileged geometric expert',
-                grip_feedback_from_lift=options.grip_feedback_from_lift,joint_limits_rad=self.model.limits.tolist()))
+                grip_feedback_from_lift=options.grip_feedback_from_lift,joint_limits_rad=self.model.limits.tolist()),image_storage=options.record_format)
             result['recording_dir']=str(root)
         if options.stage=='model':
             before=self.env.total_steps
@@ -530,6 +543,7 @@ class Episode:
         if min(force)<2.:raise RuntimeError(f'No sustained bilateral cube contact: {force}')
         print('[CLOSURE]',result['closure_joint_deg'],force,flush=True)
         measured=self.measured_q()
+        self.phase='plan_lift'
         lift_key=fingerprint(self.model)+hashlib.sha256(inspect.getsource(plan_lift).encode()).hexdigest()
         pose=self.env.frame.cube_pose();local=self.cube_in_tcp()
         context=np.r_[measured,pose.ravel(),local.ravel(),self.measured_q('right')]
@@ -641,7 +655,9 @@ class Episode:
             if np.allclose(waypoints[i],waypoints[i+1],atol=1e-10,rtol=0):continue
             result[phase+'_fk']=self.move_right(waypoints[i],waypoints[i+1],phase)
         if options.motion_mode=='continuous':
-            result['right_approach_fk']=self.follow(waypoints[approach_start:],'right','right_cartesian_approach',.12)
+            final_start=receiver['selected']['final_start_index']
+            result['right_approach_fk']=self.follow(waypoints[approach_start:final_start+1],'right','right_cartesian_approach',.12)
+            result['right_final_fk']=self.follow(waypoints[final_start:],'right','right_final_insert',.06)
         self.contact_arms.add('Right_Robot')
         self.phase='right_close'
         stable=0
@@ -934,10 +950,14 @@ def main():
                    finished_attempts=len(report['episodes']),last_episode_samples=episode.samples[-12:])
         path.write_text(json.dumps(jsonable(state),indent=2))
         logging_s+=time.perf_counter()-started
-    unexpected_failures=[]
+    unexpected_failures=[];stop_batch=False
     try:
         for case,fault in cases:
             episode.case=case;episode.fault=fault
+            report['active_case']=case
+            if options.success_count is not None:
+                print(f'[COLLECT] Starting attempt {len(report["episodes"])+1}/{len(cases)}: {case}',flush=True)
+                save()
             if options.policy_socket or options.replay:
                 for repetition in range(options.episodes):
                     started=time.perf_counter();before=dict(episode.env.timings)
@@ -969,6 +989,15 @@ def main():
                 try:
                     result=episode.run(plan)
                     result['status']='passed'
+                except KeyboardInterrupt:
+                    error='interrupted';stop_batch=True
+                    result=getattr(episode,'result',dict(case=case))
+                    result.setdefault('case',case)
+                    result.update(status='interrupted',failure='interrupted',failure_phase=episode.phase,
+                                  independent_evaluation=episode.env.evaluator.report())
+                    if episode.writer:
+                        episode.writer.finish(False,result['independent_evaluation'],episode.env.frame,interrupted=True)
+                        episode.writer=None
                 except Exception as exc:
                     error=str(exc);result=getattr(episode,'result',{})
                     result.update(case=case,fault=fault,status='failed',failure=error,failure_phase=episode.phase)
@@ -996,6 +1025,7 @@ def main():
                     except Exception as reset_exc:
                         result['failure_reset_error']=str(reset_exc)
                         unexpected_failures.append(dict(case=case,failure='failure_reset:'+str(reset_exc)))
+                        stop_batch=True  # Never continue from an unverified reset.
                     print(f'[FAILURE] {case}: {error}',flush=True)
                 result['episode_wall_s']=time.perf_counter()-started
                 result['episode_duration_s']=(episode.tick-start_tick)*episode.dt
@@ -1007,15 +1037,36 @@ def main():
                     result['transfer_trace']=list(episode.transfer_trace)
                     result['transfer_metrics']=transfer_metrics(episode.transfer_trace)
                     if episode.writer:
-                        episode.writer.finish(bool(result.get('full_task_success')),episode.env.evaluator.report(),episode.env.frame)
+                        try:
+                            episode.writer.finish(bool(result.get('full_task_success')),episode.env.evaluator.report(),episode.env.frame)
+                        except Exception as encoding_error:
+                            error=str(encoding_error)
+                            result.update(status='failed',failure='Recording finalization: '+error,failure_category='recording')
+                            unexpected_failures.append(dict(case=case,failure=result['failure']))
                         episode.writer=None
                 result['repetition']=repetition+1
                 report['episodes'].append(result);report['last_episode_samples']=episode.samples
                 save()
                 print(f'[EPISODE] {case}/{repetition+1}: {result["status"]}',flush=True)
+                if options.success_count is not None:
+                    successes=sum(e['status']=='passed' and bool(e.get('full_task_success')) and e.get('independent_evaluation',{}).get('success') is True for e in report['episodes'])
+                    failed=sum(e['status']=='failed' for e in report['episodes'])
+                    print(f'[COLLECT] Attempt {len(report["episodes"])}/{len(cases)*options.episodes} | '
+                          f'Successful: {successes}/{options.success_count} | Failed: {failed} | '
+                          f'Interrupted: {sum(e["status"]=="interrupted" for e in report["episodes"])}',flush=True)
+                    if successes>=options.success_count:stop_batch=True
+                if stop_batch:break
                 if error and options.suite=='nominal' and not options.cases_file:break
             if unexpected_failures and options.suite=='nominal' and not options.cases_file:break
-        report['status']='failed' if unexpected_failures else ('passed_negative_regression' if options.suite=='negative' else 'passed_requested_stage')
+            if stop_batch:break
+        if any(e['status']=='interrupted' for e in report['episodes']):report['status']='interrupted'
+        elif options.success_count is not None:
+            report['status']='target_reached' if sum(e['status']=='passed' and bool(e.get('full_task_success')) and e.get('independent_evaluation',{}).get('success') is True for e in report['episodes'])>=options.success_count else 'attempt_limit_or_reset_failure'
+        else:report['status']='failed' if unexpected_failures else ('passed_negative_regression' if options.suite=='negative' else 'passed_requested_stage')
+    except KeyboardInterrupt:
+        report['status']='interrupted';report['interrupted_case']=case
+        if not report['episodes'] or report['episodes'][-1]['case']!=case:
+            report['episodes'].append(dict(case=case,status='interrupted',failure='interrupted during planning/reset'))
     finally:
         keys=('approach_success','pickup_success','lift_success','transport_success','handover_success','placement_success','full_task_success')
         report['success_counts']={key:sum(bool(e.get(key)) for e in report['episodes']) for key in keys}
@@ -1028,10 +1079,11 @@ def main():
         report['total_wall_s']=time.perf_counter()-PROCESS_STARTED
         report['process_cpu_s']=time.process_time()-PROCESS_CPU_STARTED
         save()
+    options.collection_status=report['status']
     if episode.camera_audit:episode.camera_audit.finish()
     print('[RESULT]',report['status'],flush=True)
-    if unexpected_failures:raise RuntimeError(f'{len(unexpected_failures)} unexpected failure(s); see {path}')
-    if not layout.args.headless and not options.exit_after:
+    if unexpected_failures and options.success_count is None:raise RuntimeError(f'{len(unexpected_failures)} unexpected failure(s); see {path}')
+    if not layout.args.headless and not options.exit_after and report['status']!='interrupted':
         print('[VIEWER] Evaluation saved. Final state frozen for inspection; close the window to exit.',flush=True)
         sim.clear_all_callbacks()
         while layout.app.is_running():sim.render();time.sleep(.02)
@@ -1051,3 +1103,6 @@ if __name__=='__main__':
         sim=layout.SimulationContext.instance()
         if sim is not None:sim.clear_all_callbacks();sim.clear_instance()
         layout.app.close(wait_for_replicator=False)
+        if options.collection_status=='interrupted':raise SystemExit(130)
+        if options.success_count is not None:
+            raise SystemExit(0 if options.collection_status=='target_reached' else 130 if options.collection_status=='interrupted' else 1)

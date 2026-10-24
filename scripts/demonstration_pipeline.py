@@ -17,7 +17,7 @@ import time
 import numpy as np
 from PIL import Image, ImageDraw
 
-from dataset_io import validate_episode
+from dataset_io import validate_episode, episode_rgb, read_rgb
 from policy_cameras import CALIBRATION, CALIBRATION_SHA256, NAMES, CaptureContinuity, check_attachment, quaternion_rotation
 
 REPO = Path(__file__).resolve().parents[1]
@@ -192,7 +192,7 @@ def check_camera(camera: dict, name: str) -> None:
 
 
 def audit_episode(root: Path, meta: dict, case: dict, manifest: dict, quality: dict) -> dict:
-    """Decode every RGB file and check independent physics + measured capture evidence."""
+    """Decode every RGB frame and check independent physics + measured capture evidence."""
     checked=validate_episode(root)
     if not meta['success']:raise ValueError('Physical expert failure')
     evaluation=meta['evaluation']
@@ -227,19 +227,22 @@ def audit_episode(root: Path, meta: dict, case: dict, manifest: dict, quality: d
         steps=data['physics_step'].copy()
     continuity=CaptureContinuity();previous={};runs={name:0 for name in NAMES};maximum_runs=dict(runs)
     phase_indices={};unique={name:set() for name in NAMES}
+    rgb_rows=episode_rgb(root,meta)
     for i,row in enumerate(captures[:n]):
+        images=next(rgb_rows)
         if row['index']!=i or row['physics_step']!=int(steps[i]):raise ValueError('Capture/state chronology mismatch')
         if not continuity.accept(row['physics_step'],int(steps[0]),row['sensor_frame_ids']):raise ValueError('Duplicate capture tick')
         if set(row['cameras'])!=set(NAMES):raise ValueError('Capture camera set changed')
         phase_indices[row['phase']]=i
         for name in NAMES:
             check_camera(row['cameras'][name],name)
-            with Image.open(root/name/f'{i:06d}.png') as image:rgb=np.asarray(image)
+            rgb=images[name]
             if rgb.shape!=(480,640,3) or rgb.dtype!=np.uint8 or rgb.std()<quality['minimum_rgb_std']:
                 raise ValueError(f'Invalid/blank RGB {name}:{i}')
             digest=hashlib.sha256(rgb.tobytes()).hexdigest();unique[name].add(digest)
             runs[name]=runs[name]+1 if digest==previous.get(name) else 1
             maximum_runs[name]=max(maximum_runs[name],runs[name]);previous[name]=digest
+    rgb_rows.close()
     required=('close','hold','right_close','left_release','right_only_hold','bin_release','bin_settle')
     if any(phase not in phase_indices for phase in required):raise ValueError('Missing grasp/transfer/placement phase images')
     if max(maximum_runs.values())>quality['maximum_identical_frame_run']:
@@ -253,22 +256,23 @@ def review_sheet(root: Path, indices: dict, output: Path) -> None:
     sheet=Image.new('RGB',(320*3,270*len(selected)),(20,20,20));draw=ImageDraw.Draw(sheet)
     for row,(phase,index) in enumerate(selected.items()):
         for col,name in enumerate(NAMES):
-            with Image.open(root/name/f'{index:06d}.png') as image:sheet.paste(image.resize((320,240)),(col*320,row*270+25))
+            image=Image.fromarray(read_rgb(root,name,index));sheet.paste(image.resize((320,240)),(col*320,row*270+25))
             draw.text((col*320+5,row*270+5),f'{phase} | {name} | frame {index}',fill='white')
     sheet.save(output)
 
 
 def review_video(root: Path, frames: int, output: Path) -> None:
-    """Diagnostic derivative only; original lossless RGB remains the training source."""
+    """Diagnostic derivative only; original recorded streams remain the source."""
     import imageio_ffmpeg
     writer=imageio_ffmpeg.write_frames(str(output),(960,240),fps=20,codec='libx264',quality=6,
                                       output_params=['-preset','veryfast','-threads','2'])
     writer.send(None)
     try:
-        for i in range(frames):
+        for i,views in enumerate(episode_rgb(root)):
+            if i>=frames:break
             images=[]
             for name in NAMES:
-                with Image.open(root/name/f'{i:06d}.png') as image:images.append(np.asarray(image.resize((320,240))))
+                images.append(np.asarray(Image.fromarray(views[name]).resize((320,240))))
             writer.send(np.concatenate(images,axis=1))
     finally:writer.close()
 
@@ -361,7 +365,7 @@ def sampled_cube_visibility(root, frames):
                 lo=np.maximum(np.floor(uv.min(0)).astype(int)-2,[0,0]);hi=np.minimum(np.ceil(uv.max(0)).astype(int)+3,[640,480])
                 record['projected_bbox_xyxy_px']=[*lo.tolist(),*hi.tolist()]
                 if np.all(hi>lo):
-                    with Image.open(root/name/f'{index:06d}.png') as image:rgb=np.asarray(image)[lo[1]:hi[1],lo[0]:hi[0]].astype(float)
+                    rgb=read_rgb(root,name,index)[lo[1]:hi[1],lo[0]:hi[0]].astype(float)
                     mask=(rgb[:,:,0]>100)&(rgb[:,:,0]>1.35*rgb[:,:,1])&(rgb[:,:,0]>1.35*rgb[:,:,2]);y,x=np.where(mask)
                     record['red_pixels_in_projected_cube_roi']=len(x)
                     if len(x):record['visible_red_bbox_wh_px']=[int(x.max()-x.min()+1),int(y.max()-y.min()+1)]
@@ -444,7 +448,9 @@ def pilot_report(args):
         originals=''
         if root:
             for phase,index in selected.items():
-                links=' '.join(f'<a href="{html.escape(os.path.relpath(root/camera/f"{index:06d}.png",args.output))}">{camera} PNG</a>' for camera in NAMES)
+                links=' '.join(f'<a href="{html.escape(os.path.relpath(root/meta["videos"][camera]["path"],args.output))}#t={index/20}">{camera} video</a>'
+                    if meta.get('image_storage','png')=='mp4' else
+                    f'<a href="{html.escape(os.path.relpath(root/camera/f"{index:06d}.png",args.output))}">{camera} PNG</a>' for camera in NAMES)
                 originals+=f'<li>{html.escape(phase)} — frame {index}: {links}</li>'
             originals='<ul>'+originals+'</ul>'
         reviews.append(f'<details><summary>{name} — physical {row["physical_success"]}; automatic QA {row["automatic_quality_pass"]}; replay {row["replay_physical_success"] if replay else "not tested"}</summary>'

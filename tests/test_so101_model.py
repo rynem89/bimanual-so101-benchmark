@@ -8,6 +8,50 @@ from so101_model import SO101Model,calibrate,box_mesh,mesh_box_overlap,triangle_
 
 
 class GeometryTests(unittest.TestCase):
+    def test_lift_fallback_recovers_measured_empty_ik_cases_without_relaxing_limits(self):
+        from so101_planning import plan_lift,lift_ik_groups
+        model=SO101Model();calibrate(model)
+        right=np.array([-1.60254,-1.55315,1.14018,.56720,-1.46501,.7853975])
+        cases=[
+            ([-.222691774,.543522835,-.312873572,1.338461876,-1.757272959,.380862623],
+             [[.999179549,.012803829,-.038422526,-.000914779],[-.012685612,.999914026,.003318977,.000190187],[.038461718,-.002828840,.999256071,-.003229837],[0,0,0,1]],[-.310904,-.037141]),
+            ([-.249083161,.359479457,-.023321932,1.235253096,-1.866891146,.382848710],
+             [[.999228772,.014387754,-.036535643,-.000913145],[-.014367539,.999896449,.000815808,.000300903],[.036543598,-.000290252,.999332018,-.003108753],[0,0,0,1]],[-.312205,-.059197])]
+        for q,local,xy in cases:
+            q=np.array(q);local=np.array(local);pose=model.tcp_pose(q)@local;target=[*xy,.08]
+            self.assertEqual(next(lift_ik_groups(model,q,target))[0],[])
+            result=plan_lift(model,q,held=True,cube=pose[:3,3],cube_rotation=pose[:3,:3],cube_in_tcp=local,target=target,other_q=right)
+            self.assertTrue(result['safe']);self.assertTrue(result['lift_check']['safe'])
+            self.assertGreaterEqual(result['ik']['limit_margin_deg'],5.)
+            self.assertTrue(any(row['reason']=='no_ik_candidate' for row in result['rejections'] if 'reason' in row))
+
+    def test_handover_selection_avoids_saved_receiver_transit_trap(self):
+        from so101_planning import plan_transport,plan_receiver
+        model=SO101Model();calibrate(model)
+        start=np.array([-.370307028,.060861755,.017680859,1.244230986,1.569031715,.362931818])
+        right=np.array([-1.602540016,-1.553139210,1.140164971,.567211092,-1.465009570,.785397410])
+        local=np.array([[.995602645,.024063786,-.090533459,-.000968606],[-.024394777,.999699148,-.002551080,.000659035],[.090444834,.004748405,.995890147,-.004473088],[0,0,0,1]])
+        reference=np.array([1.539077686,-.306951289,1.096672929,-.943922883,-.105789612,-1.602541659,-1.078564655,1.081044490,.151756878,-1.465011305])
+        transport=plan_transport(model,start,local,other_q=right,handover_reference=reference)
+        self.assertIsNotNone(transport['selected'])
+        selected=transport['selected'];self.assertTrue(selected['buffered_receiver_pregrasp'])
+        cube=model.tcp_pose(selected['left_q'])@local
+        receiver=plan_receiver(model,selected['left_q'],cube,selected['right_q'],continuous=True,start_q=right)
+        self.assertIsNotNone(receiver['selected'])
+        self.assertTrue(receiver['selected']['final_curve_check']['safe'])
+
+    def test_off_axis_receiver_uses_buffered_alignment_before_final_insert(self):
+        from so101_planning import plan_receiver
+        model=SO101Model();calibrate(model)
+        left=np.array([1.549856544,-.547241449,1.079022527,-.527689934,.076118104,.359776855])
+        start=np.array([-1.602539897,-1.553147674,1.140174747,.567204297,-1.465002060,.785397232])
+        cube=np.array([[-.087950596,-.027132604,-.995755248,-.000503337],[.052213064,.998129241,-.031809037,-.269935280],[.994755492,-.054789056,-.086369385,.177996054],[0,0,0,1]])
+        reference=np.array([-1.602484849,-1.084257287,1.156616841,.014121214,-1.625797378,.785398163])
+        result=plan_receiver(model,left,cube,reference,continuous=True,start_q=start)
+        self.assertIsNotNone(result['selected']);selected=result['selected']
+        self.assertFalse(selected.get('direct_insertion',False))
+        self.assertTrue(selected['curve_check']['safe']);self.assertTrue(selected['final_curve_check']['safe'])
+
     def test_authored_motion_bound_covers_meshes_and_payload(self):
         from so101_model import apply
         model=SO101Model();calibrate(model)

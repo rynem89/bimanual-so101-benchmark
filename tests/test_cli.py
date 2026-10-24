@@ -12,10 +12,78 @@ from unittest.mock import patch
 
 import so101
 import policy_pipeline
+import collect_demos
 from policy_cameras import CALIBRATION_SHA256
 
 
 class CommandTests(unittest.TestCase):
+    def test_collection_distinguishes_completed_physics_from_interruption(self):
+        evaluation=dict(success=True,stages={s:True for s in ('pickup','lift','handover','placement')})
+        meta=dict(success=True,evaluation=evaluation)
+        result=dict(status='passed',full_task_success=True)
+        self.assertEqual(collect_demos.attempt_outcome(meta,result,dict(status='completed')),('success',True))
+        self.assertEqual(collect_demos.attempt_outcome(meta,dict(status='interrupted'),dict(status='completed')),('interrupted',True))
+        self.assertEqual(collect_demos.attempt_outcome(meta,dict(status='failed'),dict(status='completed')),('failed',True))
+        self.assertEqual(collect_demos.attempt_outcome(meta,dict(status='passed',full_task_success=False),dict(status='completed')),('failed',True))
+        meta['evaluation']['stages']['placement']=False
+        self.assertEqual(collect_demos.attempt_outcome(meta,result,dict(status='completed')),('failed',False))
+
+    def test_collection_launches_one_multi_case_process_and_classifies_all_rows(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);captured=[]
+            evaluation=dict(success=True,stages={s:True for s in ('pickup','lift','handover','placement')})
+            class Child:
+                cancelled=False
+                def __init__(self,command,**kwargs):
+                    captured.append(command)
+                    batch=Path(command[command.index('--record-dir')+1]).parent
+                    cases=json.loads((batch/'cases.json').read_text())['cases'];rows=[]
+                    for i,case in enumerate(cases[:3]):
+                        stopped=self.cancelled and i==2;good=i!=1 and not stopped
+                        episode=batch/'pending'/case['name'];episode.mkdir()
+                        (episode/'episode.json').write_text(json.dumps(dict(case=case['name'],success=good,interrupted=stopped,evaluation=evaluation if good else dict(success=False),frames=2)))
+                        (episode/'attempt.json').write_text(json.dumps(dict(status='interrupted' if stopped else 'completed')))
+                        np.savez(episode/'trajectory.npz',synthetic_only=np.zeros(1))
+                        rows.append(dict(case=case['name'],status='interrupted' if stopped else 'passed' if good else 'failed',full_task_success=good,failure=None if good else 'synthetic failure'))
+                    (batch/'controller').mkdir()
+                    (batch/'controller/simulation.json').write_text(json.dumps(dict(status='interrupted' if self.cancelled else 'target_reached',episodes=rows)))
+                    self.stdout=io.StringIO('[COLLECT] synthetic unit test; no simulator started\n')
+                def wait(self,**kwargs):return 130 if self.cancelled else 0
+            def reviewed(command,**kwargs):
+                Path(command[command.index('--output')+1]).write_text('synthetic review')
+                return SimpleNamespace(returncode=0)
+            args=SimpleNamespace(count=2,max_attempts=4,seed=42,record_format='mp4',headless=True)
+            poses=[dict(cube_xy_m=[-.34+i*.01,-.04],yaw_deg=i) for i in range(4)]
+            with patch.object(collect_demos,'REPO',root),patch.object(collect_demos.subprocess,'Popen',Child),patch.object(collect_demos.subprocess,'run',side_effect=reviewed),redirect_stdout(io.StringIO()):
+                self.assertEqual(collect_demos.record(args,poses,{}),0)
+            self.assertEqual(len(captured),1)
+            self.assertIn('--success-count',captured[0]);self.assertIn('--headless',captured[0])
+            summary=json.loads(next((root/'datasets/generated_demos').glob('*/summary.json')).read_text())
+            self.assertEqual((summary['successful'],summary['failed'],summary['interrupted']),(2,1,0))
+            self.assertEqual(len(summary['attempts']),3)
+            self.assertTrue(all(Path(r['review_path']).exists() for r in summary['attempts']))
+            Child.cancelled=True;captured.clear();cancelled_root=root/'cancelled_test'
+            with patch.object(collect_demos,'REPO',cancelled_root),patch.object(collect_demos.subprocess,'Popen',Child),redirect_stdout(io.StringIO()):
+                self.assertEqual(collect_demos.record(args,poses,{}),130)
+            summary=json.loads(next((cancelled_root/'datasets/generated_demos').glob('*/summary.json')).read_text())
+            self.assertEqual(len(captured),1)
+            self.assertEqual((summary['successful'],summary['failed'],summary['interrupted']),(1,1,1))
+            self.assertIn('/interrupted/',summary['attempts'][2]['episode_dir'])
+
+    def test_shared_loop_interruption_before_writer_retains_case_identity(self):
+        import ast
+        source=ast.parse((so101.SCRIPTS/'run_manipulation.py').read_text())
+        handler=next(n for n in ast.walk(source) if isinstance(n,ast.ExceptHandler)
+                     and isinstance(n.type,ast.Name) and n.type.id=='KeyboardInterrupt'
+                     and any(isinstance(x,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='stop_batch' for t in x.targets) for x in n.body))
+        scope=dict(case='synthetic_case',episode=SimpleNamespace(result={},writer=None,phase='reset',
+                   env=SimpleNamespace(evaluator=SimpleNamespace(report=lambda:dict(success=False)))))
+        exec(compile(ast.Module(body=handler.body,type_ignores=[]),'<interruption handler>','exec'),scope)
+        self.assertTrue(scope['stop_batch'])
+        self.assertEqual(scope['result']['case'],'synthetic_case')
+        self.assertEqual(scope['result']['status'],'interrupted')
+
     def test_help_is_lightweight_for_every_operation(self):
         for arguments in ([], ['scene'], ['expert'], ['collect'], ['collect', 'run'],
                           ['dataset'], ['dataset', 'convert'], ['train'], ['evaluate', 'serve'], ['replay']):

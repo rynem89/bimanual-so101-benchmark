@@ -6,6 +6,8 @@ Nothing is uploaded to the Hub. See --help for each subcommand.
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import argparse
 import hashlib
 import json
@@ -20,7 +22,7 @@ os.environ.setdefault('HF_HOME',str(Path.cwd()/'outputs/huggingface'))
 os.environ.setdefault('TORCH_HOME',str(Path.cwd()/'outputs/torch'))
 SCRIPT_SHA256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
-from dataset_io import JOINT_ORDER, TASK, validate_episode
+from dataset_io import JOINT_ORDER, TASK, validate_episode, episode_rgb
 
 RECIPES = Path(__file__).resolve().parents[1]/'configs/policy_training.json'
 
@@ -176,11 +178,10 @@ def convert(args):
         for root,meta in accepted:
             if list(meta['cameras'])!=cameras or meta['image_shape']!=[height,width,channels]:
                 raise ValueError('Inconsistent camera configuration')
-            with np.load(root/'trajectory.npz') as data:
+            with np.load(root/'trajectory.npz') as data, closing(episode_rgb(root,meta)) as images:
                 for i,action in enumerate(data['action']):
                     frame={'observation.state':data['state'][i].copy(),'action':action.copy(),'task':TASK}
-                    frame.update({f'observation.images.{name}':np.asarray(Image.open(root/name/f'{i:06d}.png'))
-                                  for name in cameras})
+                    frame.update({f'observation.images.{name}':rgb for name,rgb in next(images).items()})
                     dataset.add_frame(frame)
                 dataset.save_episode()
             provenance.append(dict(raw=str(root),case=meta['case'],configuration=meta['configuration'],

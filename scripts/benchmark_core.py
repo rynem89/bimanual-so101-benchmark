@@ -232,6 +232,20 @@ def trajectory_limits(delta, duration):
                 jerk_rad_s3=60*delta/duration**3)
 
 
+def receiver_final_contact(frame,phase,force):
+    """Only light finger contact inside the aligned final acquisition region.
+
+    Transit/ordinary approach never gain a contact exemption. Independent task
+    success, force preload, slip and right-only support criteria are unchanged.
+    """
+    if phase!='right_final_insert' or not 0<=force<=.6:return False
+    if frame.cube[2]<.15 or np.min(frame.pads[0])<.6 or frame.q[1,5]<np.deg2rad(40):return False
+    pose=frame.cube_pose();tcp=frame.tcp[1]
+    expected=pose[:3,:3]@np.array([[0,1,0],[1,0,0],[0,0,-1.]])
+    aligned=Rotation.from_matrix(expected.T@tcp[:3,:3]).magnitude()<=np.deg2rad(2)
+    return bool(aligned and np.linalg.norm(tcp[:3,3]-pose[:3,3])<=.003)
+
+
 class JointPath:
     """C2 joint spline with rest-to-rest quintic time scaling, radians/seconds.
 

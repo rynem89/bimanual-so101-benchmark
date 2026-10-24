@@ -101,6 +101,22 @@ class EvaluationTests(unittest.TestCase):
 
 
 class TrajectoryTests(unittest.TestCase):
+    def test_final_receiver_contact_is_local_light_and_phase_gated(self):
+        from benchmark_core import receiver_final_contact
+        f=frame((0,-.27,.18));f.pads[0]=2
+        f.tcp[1,:3,3]=f.cube[:3]
+        f.tcp[1,:3,:3]=np.array([[0,1,0],[1,0,0],[0,0,-1.]])
+        self.assertTrue(receiver_final_contact(f,'right_final_insert',.3))
+        for phase in ('right_transit_1','right_cartesian_approach','transport'):
+            self.assertFalse(receiver_final_contact(f,phase,.055))
+        self.assertFalse(receiver_final_contact(f,'right_final_insert',.601))
+        f.tcp[1,0,3]+=.004
+        self.assertFalse(receiver_final_contact(f,'right_final_insert',.3))
+        f.tcp[1,0,3]-=.004;f.pads[0]=0
+        self.assertFalse(receiver_final_contact(f,'right_final_insert',.3))
+        f.pads[0]=2;f.tcp[1,:3,:3]=np.eye(3)
+        self.assertFalse(receiver_final_contact(f,'right_final_insert',.3))
+
     def test_interval_grid_bounds_paired_motion_without_receiver_stop(self):
         from benchmark_core import CoordinatedJointPath,JointPath,validation_grid
         left=np.zeros((3,6));left[1,:2]=[.04,.02];left[2,:3]=[.04,1.1,-.7]

@@ -54,10 +54,11 @@ def fingerprint(model):
 
 
 class CollisionWorld:
-    def __init__(self, model, cube=(-.34,-.04,.02), other_q=None, other_base=None, cube_rotation=None):
+    def __init__(self, model, cube=(-.34,-.04,.02), other_q=None, other_base=None, cube_rotation=None, cube_clearance=None):
         self.model = model
         self.cube = np.array(cube)
         self.cube_rotation=np.eye(3) if cube_rotation is None else cube_rotation
+        self.cube_clearance=cube_clearance
         self.cube_vertices=box_mesh(np.zeros(3),np.full(3,.04),'cube').vertices @ self.cube_rotation.T + self.cube
         self.bin = [box_mesh(np.array(c), s, name) for c,s,name in (
             ((.34,-.04,.005),(.16,.16,.01),'bin_floor'),
@@ -90,9 +91,10 @@ class CollisionWorld:
             if mesh.link != 'base' and bounds[i,0,2] < margin:
                 faults.append(f'table:{mesh.link}')
             if not (cube_contact and mesh.link in ('gripper','jaw')):
-                if np.all(bounds[i,0] <= self.cube_vertices.max(0)+margin) and np.all(bounds[i,1] >= self.cube_vertices.min(0)-margin):
+                cube_margin=max(margin,self.cube_clearance or 0.)
+                if np.all(bounds[i,0] <= self.cube_vertices.max(0)+cube_margin) and np.all(bounds[i,1] >= self.cube_vertices.min(0)-cube_margin):
                     triangles = (apply(pose,mesh.triangles)-self.cube) @ self.cube_rotation
-                    if mesh_box_overlap(triangles,np.zeros(3),np.full(3,.02+margin)):
+                    if mesh_box_overlap(triangles,np.zeros(3),np.full(3,.02+cube_margin)):
                         faults.append(f'cube:{mesh.link}')
         for i,j in np.argwhere(overlaps(self.bin_bounds)):
             mesh,_,pose=meshes[i];obstacle=self.bin[j]
@@ -241,6 +243,37 @@ def plan_pickup(model, cube=(-.34,-.04,.02), rotation=None):
     return {'waypoints':[], 'ik':evidence}
 
 
+def lift_ik_groups(model, closed, target):
+    """Keep the proven lift first; then vary tilt and bounded inward retreat.
+
+    All solves retain authored joint bounds. Callers still check limit margin,
+    the complete robot path and the rigid measured payload before execution.
+    """
+    target=np.asarray(target,dtype=float)
+    def solve(goal,direction,seeds):
+        answers=model.ik(goal,approach=direction,opening_deg=np.rad2deg(closed[-1]),reference=closed,seeds=seeds)
+        return answers,dict(target_m=goal,approach=direction,candidates=len(answers),
+                            limit_margins_deg=[a['limit_margin_deg'] for a in answers])
+    original=[];evidence=[]
+    for heading in (-19.,-18.5,-19.5):
+        h=np.deg2rad(heading);tilt=np.deg2rad(15)
+        answers,row=solve(target,[np.sin(h)*np.sin(tilt),np.cos(h)*np.sin(tilt),-np.cos(tilt)],3)
+        original.extend(answers);evidence.append(row)
+    yield sorted(original,key=lambda a:np.linalg.norm(a['q']-closed)),evidence
+    radial=target[:2]-model.base[:2,3];radial/=np.linalg.norm(radial)
+    measured=-model.tcp_pose(closed)[:3,2]
+    directions=[measured,np.array([0.,0.,-1.])]
+    for degrees in (5.,10.,20.,30.,40.):
+        tilt=np.deg2rad(degrees)
+        directions.append(np.r_[radial*np.sin(tilt),-np.cos(tilt)])
+    for inward in (0.,.01,.02):
+        goal=target.copy();goal[:2]-=inward*radial
+        for direction in directions:
+            answers,row=solve(goal,direction,8)
+            row['inward_m']=inward
+            yield answers,[row]
+
+
 def plan_lift(model, grasp_q, held=False, cube=(-.34,-.04,.02), cube_rotation=None, cube_in_tcp=None, target=None, other_q=None):
     """Plan a 58 mm lift with achievable tilt and a predicted payload envelope.
 
@@ -253,19 +286,19 @@ def plan_lift(model, grasp_q, held=False, cube=(-.34,-.04,.02), cube_rotation=No
     closure=world.segment(np.array(grasp_q),closed,cube_contact=True)
     if not closure['safe']:
         return {'safe':False,'failure':'closure_collision','check':closure}
-    candidates=[]
     target=np.asarray(cube)+[0,0,.06] if target is None else np.asarray(target)
-    for heading in (-19.,-18.5,-19.5):
-        h=np.deg2rad(heading);tilt=np.deg2rad(15)
-        direction=[np.sin(h)*np.sin(tilt),np.cos(h)*np.sin(tilt),-np.cos(tilt)]
-        candidates.extend(model.ik(target,approach=direction,opening_deg=np.rad2deg(closed[-1]),reference=closed,seeds=3))
-    candidates.sort(key=lambda x:np.linalg.norm(x['q']-closed))
-    rejections=[]
+    rejections=[];ik_attempts=[]
     payload=box_mesh(np.array([0,0,-.002]) if cube_in_tcp is None else np.zeros(3),np.full(3,.04),'payload')
     local=model.tcp if cube_in_tcp is None else model.tcp@cube_in_tcp
     world.motion_radii=model.motion_radii(apply(local,payload.vertices))
-    for candidate in candidates:
+    def candidates():
+        for group,evidence in lift_ik_groups(model,closed,target):
+            ik_attempts.extend(evidence)
+            if not group:rejections.append(dict(reason='no_ik_candidate',attempts=evidence))
+            yield from group
+    for candidate in candidates():
         if candidate['limit_margin_deg']<5:
+            rejections.append(dict(reason='joint_limit_margin',margin_deg=candidate['limit_margin_deg']))
             continue
         end=candidate['q']
         check=world.segment(closed,end,cube_contact=True)
@@ -292,9 +325,9 @@ def plan_lift(model, grasp_q, held=False, cube=(-.34,-.04,.02), cube_rotation=No
             if faults:break
         if not faults:
             return {'safe':True,'closed_q':closed,'lift_q':end,'closure_check':closure,'lift_check':check,
-                    'ik':candidate,'target_world_m':target,'rejections':rejections}
+                    'ik':candidate,'target_world_m':model.tcp_pose(end)[:3,3],'rejections':rejections,'ik_attempts':ik_attempts}
         rejections.append({'faults':faults})
-    return {'safe':False,'failure':'no_lift_candidate','rejections':rejections}
+    return {'safe':False,'failure':'no_lift_candidate','rejections':rejections,'ik_attempts':ik_attempts}
 
 
 def coordinated_segment(model, left_start, left_goal, right_start, right_goal,
@@ -509,6 +542,19 @@ def plan_transport(model, start_q, cube_in_tcp, other_q=None, handover_reference
         pres=[p for p in pres if p['limit_margin_deg']>5]
         candidate['receiver_pre_candidates']=pres
         if not pres:continue
+        if other_q is not None:
+            right=copy.copy(model);right.base=right_base
+            start_pose=right.tcp_pose(other_q)
+            payload_pose=model.tcp_pose(candidate['left_q'])@cube_in_tcp
+            clearance=CollisionWorld(right,payload_pose[:3,3],other_q=candidate['left_q'],other_base=model.base,
+                                     cube_rotation=payload_pose[:3,:3],cube_clearance=.005)
+            available=[]
+            for pre in pres:
+                pose=right.tcp_pose(pre['q']);difference=start_pose[:3,3]-pose[:3,3];axis=pose[:3,2]
+                aligned=np.linalg.norm(difference-axis*(axis@difference))<=.002 and np.linalg.norm(difference)<.03
+                if aligned or not clearance.check(pre['q'],margin=.001):available.append(pre)
+            candidate['buffered_receiver_pregrasp']=bool(available)
+            if not available:continue
         attempts+=1
         end=np.array(candidate['left_q']);end[-1]=start_q[-1]
         candidate['transport_check']=carried_segment(model,start_q,end,cube_in_tcp,other_q=other_q)
@@ -526,12 +572,14 @@ def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False, start
     rotation=cube_pose[:3,:3]@swap
     goals=right.ik(cube_pose[:3,3],rotation=rotation,reference=reference_q,seeds=6)
     world=CollisionWorld(right,cube_pose[:3,3],other_q=left_q,other_base=model.base,cube_rotation=cube_pose[:3,:3])
+    transit_world=CollisionWorld(right,cube_pose[:3,3],other_q=left_q,other_base=model.base,
+                                 cube_rotation=cube_pose[:3,:3],cube_clearance=.005)
     start=np.zeros(6) if start_q is None else np.asarray(start_q,dtype=float).copy()
     result={'left_q':left_q,'right_start':start,'cube_pose':cube_pose,'selected':None,'rejections':[]};rrt_attempted=False
     for goal in goals:
         faults=world.check(goal['q'],margin=.001)
         if faults:result['rejections'].append({'goal':faults});continue
-        for distance in (.04,.02):
+        for distance in (.04,.045,.05,.055,.06,.02):
             pres=right.ik(cube_pose[:3,3]+rotation[:,2]*distance,rotation=rotation,reference=goal['q'],seeds=3)
             for pre in pres:
                 if pre['limit_margin_deg']<3:continue
@@ -544,29 +592,43 @@ def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False, start
                     approach.append(min(solutions,key=lambda r:np.linalg.norm(r['q']-approach[-1]))['q'])
                 if len(approach)!=17:
                     result['rejections'].append({'cartesian_ik_failed':len(approach)});continue
-                if continuous and np.linalg.norm(right.tcp_pose(start)[:3,3]-right.tcp_pose(pre['q'])[:3,3])<.03:
+                def curve_checks(points):
+                    # Finish the last 6 mm separately, slowly and without an
+                    # unchecked spline across the contact boundary.
+                    cut=next((i for i in range(1,len(points)-1)
+                              if np.linalg.norm(right.tcp_pose(points[i])[:3,3]-cube_pose[:3,3])<=.006),len(points)-2)
+                    prefix=world.curve(points[:cut+1],speed=.12)
+                    final=world.curve(points[cut:],speed=.06)
+                    return cut,prefix,final
+                start_pose=right.tcp_pose(start);pre_pose=right.tcp_pose(pre['q'])
+                difference=start_pose[:3,3]-pre_pose[:3,3];axis=pre_pose[:3,2]
+                lateral=np.linalg.norm(difference-axis*(axis@difference))
+                if continuous and np.linalg.norm(difference)<.03 and lateral<=.002:
                     entry=[start,*approach]
-                    direct=world.curve(entry,speed=.12)
-                    if direct['safe']:
+                    cut,direct,final=curve_checks(entry)
+                    if direct['safe'] and final['safe']:
                         closure=approach[-1].copy();closure[-1]=np.deg2rad(15)
                         closing=world.segment(approach[-1],closure,margin=.001,cube_contact=True)
                         if closing['safe']:
                             result['selected']=dict(waypoints=entry,approach_start_index=0,transit_routed=False,
-                                direct_insertion=True,checks=[closing],grasp_ik=goal,pre_ik=pre,curve_check=direct)
+                                direct_insertion=True,checks=[closing],grasp_ik=goal,pre_ik=pre,curve_check=direct,
+                                final_start_index=cut,final_curve_check=final)
                             return result
+                if transit_world.check(approach[0],margin=.001):
+                    result['rejections'].append({'pregrasp':'insufficient buffered transit clearance'});continue
                 insertion=[world.segment(a,b,margin=.001) for a,b in zip(approach[:-1],approach[1:])]
                 if not all(c['safe'] for c in insertion):result['rejections'].append(insertion);continue
-                curve_check=world.curve(approach) if continuous else None
-                if continuous and not curve_check['safe']:
-                    result['rejections'].append({'curve':curve_check});continue
-                first=world.segment(start,opened,margin=.001)
+                cut,curve_check,final=curve_checks(approach) if continuous else (None,None,None)
+                if continuous and not (curve_check['safe'] and final['safe']):
+                    result['rejections'].append({'curve':curve_check,'final_curve':final});continue
+                first=transit_world.segment(start,opened,margin=.001)
                 if not first['safe']:result['rejections'].append(first);continue
-                transit=world.segment(opened,pre['q'],margin=.001);route=[opened,pre['q']]
+                transit=transit_world.segment(opened,approach[0],margin=.001);route=[opened,approach[0]]
                 if not transit['safe']:
                     result['rejections'].append(transit)
                     if rrt_attempted:continue
                     rrt_attempted=True
-                    transit=world.joint_transit(opened,pre['q'])
+                    transit=transit_world.joint_transit(opened,approach[0])
                     if not transit['safe']:result['rejections'].append(transit);continue
                     route=transit['waypoints']
                 closure=approach[-1].copy();closure[-1]=np.deg2rad(15)
@@ -574,7 +636,8 @@ def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False, start
                 if not check['safe']:result['rejections'].append(check);continue
                 result['selected']={'waypoints':[start,*route,*approach[1:]],
                     'approach_start_index':len(route),'transit_routed':len(route)>2,
-                    'checks':[first,transit,*insertion,check],'grasp_ik':goal,'pre_ik':pre,'curve_check':curve_check}
+                    'checks':[first,transit,*insertion,check],'grasp_ik':goal,'pre_ik':pre,'curve_check':curve_check,
+                    'final_start_index':None if cut is None else len(route)+cut,'final_curve_check':final}
                 return result
     return result
 

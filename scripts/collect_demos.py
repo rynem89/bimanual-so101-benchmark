@@ -40,6 +40,7 @@ def arguments():
     parser.add_argument("--y-offset-cm", type=float, nargs=2, default=(-2., 2.), metavar=("MIN", "MAX"))
     parser.add_argument("--yaw-deg", type=float, nargs=2, default=(-6., 6.), metavar=("MIN", "MAX"))
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--record-format", choices=("mp4", "png"), default="mp4", help="H.264 streaming; png is the legacy fallback")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--gui", dest="headless", action="store_false", help="Visible Isaac Sim (default)")
     mode.add_argument("--headless", action="store_true", help="Record with cameras but no GUI")
@@ -95,7 +96,7 @@ def planned_poses(args):
     from scipy.spatial.transform import Rotation
     from benchmark_core import EVALUATION_CASES
     from so101_model import SO101Model, apply, calibrate, mesh_box_overlap
-    from so101_planning import CollisionWorld
+    from so101_planning import CollisionWorld, plan_lift
 
     # Read literal scene dimensions without importing its Isaac AppLauncher.
     names = {"TABLE_SIZE_M", "TABLE_TOP_Z_M", "CUBE_EDGE_M", "BIN_CENTER_XY_M", "BIN_OUTER_XY_M"}
@@ -152,18 +153,20 @@ def planned_poses(args):
             rejected["robot HOME clearance"] += 1
             continue
         world = CollisionWorld(model, cube, cube_rotation=rotation)
-        reachable = True
+        reachable = True;endpoints=[]
         for offset, seed in zip((.035, .002), reference):
             # Same full-rotation targets and USD bounds as plan_pickup. The
             # existing controller still validates the complete path at runtime.
             solutions = model.ik(cube + [0, 0, offset], rotation=rotation, reference=seed, seeds=2)
-            if not any(s["limit_margin_deg"] >= 3 and not world.check(s["q"], margin=.002) for s in solutions):
+            valid=[s for s in solutions if s["limit_margin_deg"]>=3 and not world.check(s["q"],margin=.002)]
+            if not valid:
                 reachable = False
                 break
+            endpoints.append(valid[0]['q'])
         if not reachable:
             rejected["pregrasp/grasp IK or endpoint clearance"] += 1
             continue
-        feasible.append(dict(cube_xy_m=xy.tolist(), yaw_deg=yaw))
+        feasible.append(dict(cube_xy_m=xy.tolist(), yaw_deg=yaw,_endpoints=endpoints))
 
     # Farthest-position ordering spreads attempts across the feasible region.
     # Five millimetres is a minimum between attempts, not a substitute region.
@@ -176,7 +179,20 @@ def planned_poses(args):
                 break
         else:
             index = 0
-        selected.append(feasible.pop(index))
+        candidate=feasible.pop(index);pre,grasp=candidate.pop('_endpoints')
+        cube=np.r_[candidate['cube_xy_m'],z]
+        rotation=Rotation.from_euler('z',candidate['yaw_deg'],degrees=True).as_matrix()
+        world=CollisionWorld(model,cube,cube_rotation=rotation)
+        if not world.segment(pre,grasp,margin=.001)['safe']:
+            rejected['pregrasp descent collision']+=1;continue
+        closed=grasp.copy();closed[-1]=np.deg2rad(22)
+        cube_pose=np.eye(4);cube_pose[:3,:3]=rotation;cube_pose[:3,3]=cube
+        local=np.linalg.inv(model.tcp_pose(closed))@cube_pose
+        lift=plan_lift(model,closed,held=True,cube=cube,cube_rotation=rotation,cube_in_tcp=local,
+                       target=[*candidate['cube_xy_m'],.08],other_q=home)
+        if not lift['safe']:
+            rejected['predicted lift IK/payload path']+=1;continue
+        selected.append(candidate)
     print(f"Sampled {budget} stratified candidates; rejections: {dict(rejected)}", flush=True)
     print(f"Found {len(selected)} feasible positions at least 5 mm apart (cap {args.max_attempts}).", flush=True)
     if selected:
@@ -211,107 +227,108 @@ def read_json(path):
         return {}  # Interrupted/corrupt output cannot establish success.
 
 
+def attempt_outcome(meta, result, marker):
+    """Physical success and interruption are separate from process exit status."""
+    evaluation=meta.get("evaluation", {})
+    physical=(evaluation.get("success") is True and
+              all(evaluation.get("stages", {}).get(s) is True for s in ("pickup","lift","handover","placement")))
+    if meta.get("interrupted") or marker.get("status")=="interrupted" or result.get("status")=="interrupted":
+        return "interrupted",physical
+    if (physical and meta.get("success") is True and marker.get("status")=="completed"
+            and result.get("status")=="passed" and result.get('full_task_success') is True):
+        return "success",True
+    return "failed",physical
+
+
 def record(args, poses, env):
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    root = REPO / "datasets/generated_demos" / f"{stamp}_seed{args.seed}"
-    for name in ("successful", "failed", "reviews", "attempts"):
-        (root / name).mkdir(parents=True, exist_ok=False)
-    summary = dict(requested_successes=args.count, max_attempts=args.max_attempts, arguments=vars(args),
-                   status="in_progress", successful=0, failed=0, attempts=[],
-                   note="Physical successes await human dataset acceptance. No dataset QA or training run.")
-    write_json(root / "summary.json", summary)
-    print(f"Run directory: {root}\nCtrl+C stops the whole collection safely.", flush=True)
-    for number, pose in enumerate(poses, 1):
-        attempt = root / "attempts" / f"attempt_{number:04d}"
-        attempt.mkdir()
-        case = dict(pose, name=f"demo_{number:04d}", seed=(args.seed + number) % 2**32)
-        manifest = attempt / "case.json"
-        write_json(manifest, dict(schema="so101-cases-1.0", split="train", cases=[case]))
-        command = [sys.executable, str(REPO / "scripts/run_manipulation.py"), "--stage", "full",
-                   "--episodes", "1", "--motion-mode", "continuous", "--expert-hz", "20",
-                   "--grip-feedback-from-lift", "--overview-profile", "centered", "--cases-file", str(manifest),
-                   "--split", "train", "--record-dir", str(attempt / "raw"), "--authorize-recording",
-                   "--output-dir", str(attempt / "controller"), "--exit-after"]
-        if args.headless:
-            command.append("--headless")
-        print(f"Attempt {number}/{args.max_attempts} | Successful: {summary['successful']}/{args.count} | "
-              f"Failed: {summary['failed']} | XY {case['cube_xy_m']} m, yaw {case['yaw_deg']} deg", flush=True)
-        started = time.perf_counter()
-        interrupted = False
-        with (attempt / "controller.log").open("w") as log:
-            child = subprocess.Popen(command, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
-            try:
-                code = child.wait()
-            except KeyboardInterrupt:
-                interrupted = True
-                if child.poll() is None:
-                    try:
-                        child.send_signal(signal.SIGINT)
-                    except ProcessLookupError:
-                        pass
+    stamp=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    root=REPO/"datasets/generated_demos"/f"{stamp}_seed{args.seed}"
+    for name in ("successful","failed","interrupted","reviews","pending"):
+        (root/name).mkdir(parents=True,exist_ok=False)
+    cases=[dict(pose,name=f"demo_{i:04d}",seed=(args.seed+i)%2**32) for i,pose in enumerate(poses,1)]
+    manifest=root/"cases.json"
+    write_json(manifest,dict(schema="so101-cases-1.0",split="train",cases=cases))
+    summary=dict(requested_successes=args.count,max_attempts=args.max_attempts,arguments=vars(args),
+                 status="in_progress",successful=0,failed=0,interrupted=0,attempts=[],
+                 note="Physical successes await human dataset acceptance; no automatic dataset QA or training.")
+    write_json(root/"summary.json",summary)
+    command=[sys.executable,str(REPO/"scripts/run_manipulation.py"),"--stage","full","--episodes","1",
+             "--motion-mode","continuous","--expert-hz","20","--grip-feedback-from-lift",
+             "--overview-profile","centered","--cases-file",str(manifest),"--split","train",
+             "--record-dir",str(root/"pending"),"--record-format",args.record_format,"--authorize-recording",
+             "--success-count",str(args.count),"--output-dir",str(root/"controller"),"--exit-after"]
+    if args.headless:command.append("--headless")
+    print(f"Run directory: {root}\nOne simulator for this batch. Ctrl+C stops collection safely.",flush=True)
+    interrupted=False;started=time.perf_counter()
+    with (root/"controller.log").open("w") as log:
+        child=subprocess.Popen(command,cwd=REPO,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        try:
+            for line in child.stdout:
+                log.write(line);log.flush()
+                if line.startswith(("[COLLECT]","[FAILURE]")):print(line.rstrip(),flush=True)
+            code=child.wait()
+        except KeyboardInterrupt:
+            interrupted=True
+            if child.poll() is None:
+                try:child.send_signal(signal.SIGINT)
+                except ProcessLookupError:pass
+            try:code=child.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                child.terminate()
+                try:code=child.wait(timeout=5)
+                except subprocess.TimeoutExpired:child.kill();code=child.wait()
+            log.write(child.stdout.read());log.flush()
+        finally:child.stdout.close()
+    report=read_json(root/"controller/simulation.json")
+    if report.get("history_file"):
+        checkpoint=report;report=read_json(Path(report["history_file"]))
+        report["interrupted_case"]=checkpoint.get("active_case")
+    results={row["case"]:row for row in report.get("episodes",[])}
+    interrupted=interrupted or code<0 or code==130 or report.get('status')=='interrupted'
+    if interrupted:report.setdefault('interrupted_case',report.get('active_case'))
+    raw={}
+    for episode in (root/"pending").iterdir():
+        meta=read_json(episode/"episode.json") or read_json(episode/"attempt.json")
+        raw[meta.get("case",episode.name)]=(episode,meta)
+    if not results and not raw and not interrupted:
+        results[cases[0]['name']]=dict(status='failed',failure=f'Simulator initialization failed (exit {code}); see controller.log')
+    stop_reviews=interrupted
+    for number,case in enumerate(cases,1):
+        name=case["name"];result=results.get(name,{})
+        if name not in raw and not result and name!=report.get("interrupted_case"):continue
+        episode,meta=raw.get(name,(None,{}))
+        marker=read_json(episode/"attempt.json") if episode else {}
+        if not result and (interrupted or report.get("status")=="interrupted"):
+            result=dict(status="interrupted",failure="interrupted")
+        status,physical=attempt_outcome(meta,result,marker)
+        row=dict(attempt=number,**case,status=status,success=status=="success",physical_success=physical,
+                 duration_s=meta.get("frames",meta.get("completed_policy_steps",0))/20,
+                 wall_s=result.get("episode_wall_s"),episode_dir=None,review_path=None,
+                 failure=None if status=="success" else result.get("failure") or "Incomplete recording; see controller.log")
+        row['failure_category']=result.get('failure_category') if status!='success' else None
+        if episode:
+            destination=root/({"success":"successful","failed":"failed","interrupted":"interrupted"}[status])/episode.name
+            shutil.move(str(episode),destination);row["episode_dir"]=str(destination)
+            if not stop_reviews and (destination/"trajectory.npz").exists() and (destination/"episode.json").exists():
+                review=root/"reviews"/f"attempt_{number:04d}.html"
                 try:
-                    code = child.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    child.terminate()
-                    try:
-                        code = child.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        child.kill()
-                        code = child.wait()
-        report_path = attempt / "controller/simulation.json"
-        report = read_json(report_path)
-        result = (report.get("episodes") or [{}])[0]
-        row = dict(attempt=number, **case, success=False, physical_success=False, returncode=code,
-                   wall_s=time.perf_counter() - started, duration_s=None, episode_dir=None, review_path=None,
-                   failure=result.get("failure") or ("interrupted" if interrupted else f"process returned {code}"))
-        recordings = [p for p in (attempt / "raw").glob("*") if p.is_dir()]
-        for episode in recordings:
-            metadata = episode / "episode.json"
-            meta = read_json(metadata) or read_json(episode / "attempt.json")
-            evaluation = meta.get("evaluation", {})
-            physical = (meta.get("success") is True and evaluation.get("success") is True
-                        and all(evaluation.get("stages", {}).get(s) is True for s in ("pickup", "lift", "handover", "placement")))
-            success = (physical and code == 0 and not interrupted and (episode / "trajectory.npz").exists()
-                       and read_json(episode / "attempt.json").get("status") == "completed")
-            destination = root / ("successful" if success else "failed") / episode.name
-            shutil.move(str(episode), destination)
-            row.update(success=success, physical_success=physical, episode_dir=str(destination),
-                       duration_s=meta.get("frames", meta.get("completed_policy_steps", 0)) / 20 if meta else None)
-            if success:
-                row["failure"] = None
-            if (destination / "episode.json").exists() and (destination / "trajectory.npz").exists():
-                review = root / "reviews" / f"attempt_{number:04d}.html"
-                try:
-                    reviewed = subprocess.run([sys.executable, str(REPO / "scripts/so101.py"), "dataset", "review",
-                                              "--episode", str(destination), "--output", str(review)],
-                                             cwd=REPO, env=env, capture_output=True, text=True)
-                    if reviewed.returncode == 0:
-                        row["review_path"] = str(review)
-                    else:
-                        row["review_error"] = reviewed.stderr.strip() or reviewed.stdout.strip()
-                        print(f"Review unavailable for attempt {number}; reason saved in summary.json", flush=True)
+                    reviewed=subprocess.run([sys.executable,str(REPO/"scripts/so101.py"),"dataset","review",
+                        "--episode",str(destination),"--output",str(review)],cwd=REPO,env=env,capture_output=True,text=True)
+                    if reviewed.returncode==0:row["review_path"]=str(review)
+                    else:row["review_error"]=reviewed.stderr.strip() or reviewed.stdout.strip()
                 except KeyboardInterrupt:
-                    interrupted = True
-                    row["review_error"] = "Review interrupted; recording retained"
-            else:
-                row["review_error"] = "Recording incomplete; raw files retained, HTML unavailable"
-        if not recordings:
-            row["failure"] += "; no recording produced; see controller.log"
+                    interrupted=True;stop_reviews=True;row["review_error"]="Review interrupted; recording retained"
+            else:row["review_error"]="Interrupted/incomplete recording; HTML can be generated later where possible"
         summary["attempts"].append(row)
-        summary["successful"] += int(row["success"])
-        summary["failed"] += int(not row["success"])
-        summary["status"] = "interrupted" if interrupted else "in_progress"
-        write_json(root / "summary.json", summary)
-        print(f"Attempt {number}/{args.max_attempts} | Successful: {summary['successful']}/{args.count} | Failed: {summary['failed']}", flush=True)
-        if interrupted or summary["successful"] >= args.count:
-            break
-    if summary["status"] != "interrupted":
-        summary["status"] = ("target_reached" if summary["successful"] >= args.count else
-                             "max_attempts_reached" if len(summary["attempts"]) >= args.max_attempts else "pose_pool_exhausted")
-    write_json(root / "summary.json", summary)
-    print(f"Stopped: {summary['status']}; {summary['successful']}/{args.count} successful demonstrations.\n"
-          f"Episodes, failed attempts and reviews: {root}\nSummary: {root / 'summary.json'}", flush=True)
-    return 0 if summary["status"] == "target_reached" else 1
+        summary[{"success":"successful","failed":"failed","interrupted":"interrupted"}[status]]+=1
+        write_json(root/"summary.json",summary)
+    summary["wall_s"]=time.perf_counter()-started;summary["returncode"]=code
+    summary["status"]=("interrupted" if interrupted or report.get("status")=="interrupted" else
+                       "target_reached" if summary["successful"]>=args.count else "attempt_limit_or_reset_failure")
+    write_json(root/"summary.json",summary)
+    print(f"Stopped: {summary['status']} | Successful: {summary['successful']}/{args.count} | "
+          f"Failed: {summary['failed']} | Interrupted: {summary['interrupted']}\nSummary: {root/'summary.json'}",flush=True)
+    return 0 if summary["status"]=="target_reached" else 130 if summary["status"]=="interrupted" else 1
 
 
 def main():

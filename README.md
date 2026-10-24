@@ -83,9 +83,10 @@ physical stages succeeded with zero forbidden contacts in **114.88 simulated
 seconds each**, including the 3 s reset. The previous coordinated version took
 **134.12 s** and the sequential reference **153.18 s**. That is **14.3% shorter
 than the previous version**. Excluding reset, the shorter motion would mean about
-14.7% fewer 20 Hz observation/action rows if later recorded. No demonstration
-dataset is currently retained for this revision; the prior pilot batches were
-rejected and deleted at the owner’s request.
+14.7% fewer 20 Hz observation/action rows if later recorded. The owner’s current diagnostic PNG batch remains preserved locally; it is not
+an accepted training corpus. These nominal timings describe the pre-repair
+controller. The current collection/controller repair has only offline verification
+and still needs the owner’s physical GUI/headless tests.
 
 The cold run took **232.24 s wall time**, including **64.81 s of stage planning**.
 The aligned receiver insertion needed **6.61 s planning**; the new return/carry
@@ -129,13 +130,13 @@ with the absolute joint target applied over the next three physics ticks.
 ### Generate your own demonstrations
 
 Use **`scripts/collect_demos.py`**. It calls the existing coordinated expert,
-recorder and `so101.py dataset review`; it does not implement another controller.
+recorder and `so101.py dataset review` in one multi-case simulator process.
 You choose the ranges and run collection yourself. Activate `leisaac-sim` in each
 new terminal using [step 1](#1-setup), including the asset path and thread settings.
 No packages need installing.
 
-- `--count 10` asks for **10 successful physical demonstrations**, not 10 attempts.
-- `--max-attempts 20` caps simulation attempts, including failures. Default is
+- `--count N` asks for **N successful physical demonstrations**, not N attempts.
+- `--max-attempts M` caps simulation attempts, including failures. Default is
   three times `--count`. Collection stops at the success target or the cap/available
   distinct poses. An unmet target returns a nonzero exit code and the actual count.
 - `--x-offset-cm MIN MAX` and `--y-offset-cm MIN MAX` are **centimetres relative
@@ -157,14 +158,16 @@ fails before simulation; change the ranges, seed or count explicitly.
 Before recording, the geometry filter checks the **whole rotated 40 mm cube** is
 supported by the table with a 10 mm edge margin, clear of the bin and both HOME
 robots, and has valid open-gripper pregrasp/grasp IK under the existing joint
-limits and collision checks. This establishes initial geometric feasibility;
+limits and collision checks. It also checks pregrasp descent and a predicted
+closed-grasp payload lift using the same lift planner. Actual seating and the
+prepositioned receiver still require runtime checks. This establishes geometric feasibility;
 **it does not prove a full collision-free task or physical success**. The expert
 still checks complete motion and applies all existing contact/drop/grasp guards.
 
 **1. Preview only — no simulator, recording or output files:**
 
 ```bash
-python scripts/collect_demos.py --count 10 --max-attempts 20 \
+python scripts/collect_demos.py --count 1 --max-attempts 2 \
   --x-offset-cm -3 3 --y-offset-cm -2 2 --yaw-deg -6 6 --seed 42 \
   --preview-only
 ```
@@ -172,7 +175,7 @@ python scripts/collect_demos.py --count 10 --max-attempts 20 \
 **2. Record visibly in Isaac Sim:**
 
 ```bash
-python scripts/collect_demos.py --count 10 --max-attempts 20 \
+python scripts/collect_demos.py --count 1 --max-attempts 2 \
   --x-offset-cm -3 3 --y-offset-cm -2 2 --yaw-deg -6 6 --seed 42 \
   --gui
 ```
@@ -180,26 +183,30 @@ python scripts/collect_demos.py --count 10 --max-attempts 20 \
 **3. Record without the GUI, with the same three cameras and HTML reviews:**
 
 ```bash
-python scripts/collect_demos.py --count 10 --max-attempts 20 \
+python scripts/collect_demos.py --count 1 --max-attempts 2 \
   --x-offset-cm -3 3 --y-offset-cm -2 2 --yaw-deg -6 6 --seed 42 \
   --headless
 ```
 
-GUI is the default. Each attempt launches the existing expert, resets the scene,
-records one pose and closes Isaac on completion; the next attempt starts fresh.
-Use **Ctrl+C in the terminal** to stop the whole collection. Closing one attempt's
-window early can count as a failure and advance to the next candidate.
+GUI is the default. One Isaac instance runs the whole batch through the expert’s
+existing multi-case loop. Each episode uses the existing physical reset and its
+independent pose/velocity/weight checks. An unverified reset stops the batch.
+The process stops at the success target or attempt cap; it does not restart
+Isaac for each case. The examples above are deliberately limited to one success
+and at most two attempts for owner testing.
+Use **Ctrl+C in the terminal** to stop the whole collection. Closing the simulator window ends the shared batch.
 
 The script prints a new run directory under
 `datasets/generated_demos/<UTC timestamp>_seed42/`:
 
 | Location inside that run | What it contains |
 | --- | --- |
-| `successful/<episode>/` | Finalized recordings with independent pickup/lift/handover/placement success; existing raw schema, three RGB streams, measured states and held actions |
-| `failed/<episode>/` | Failed or interrupted recordings, kept separately and never counted toward `--count` |
+| `successful/<episode>/` | Finalized recordings with independent pickup/lift/handover/placement success; three RGB streams, measured states and held actions |
+| `failed/<episode>/` | Completed physical/controller/recording failures; never counted toward `--count` |
+| `interrupted/<episode>/` | User-interrupted or terminated partial recordings; reported separately from physical failures |
 | `reviews/attempt_0001.html`, etc. | One interactive three-camera/state/action review per recording, where enough data exists; images stay in the corresponding episode |
-| `attempts/attempt_0001/`, etc. | The exact cube-case input, expert log and normal controller outputs; startup failures can have logs without a recording |
-| `summary.json` | Cube XY/yaw/seed, physical and collection result, duration, failure reason, episode and review paths, actual successful/failed counts |
+| `cases.json`, `controller.log`, `controller/` | Exact batch poses, one simulator log and normal per-case plans/results; startup failures may have no recording |
+| `summary.json` | Cube XY/yaw/seed, physical and collection result, duration, failure reason, episode and review paths, actual successful/failed/interrupted counts |
 
 A failed grasp, drop, contact guard or other failure remains recorded; the script
 tries another feasible position up to the cap. It does not relax safety checks.
@@ -210,9 +217,46 @@ images and actions yourself; conversion/training still require their existing
 separate approvals. The old pilot directories and their review links were
 superseded and deleted at the owner's request.
 
-**Implementation verification is limited to argument handling and geometric pose
-previews. GUI/headless collection with this new helper has not been run by the
-assistant.** [Raw format and learning procedure](docs/DATASET.md#raw-attempt-layout).
+### Recording storage and compatibility
+
+New collection defaults to **three MP4/H.264 streams**, one per camera, still
+640×480 RGB at 20 Hz. Encoding uses installed FFmpeg/libx264, CRF 18, ultrafast,
+YUV420p and one CPU encoding thread per camera. It is **lossy**, not byte-identical
+to PNG. Original recordings are never transcoded or overwritten.
+
+Raw schema `so101-demonstration-1.2` stores `overview.mp4`, `left_wrist.mp4` and
+`right_wrist.mp4` inside each episode. Metadata names the files, codec and exact
+encoded frame counts. `trajectory.npz`, capture clocks, measured states, actual
+held actions and privileged diagnostics retain their existing semantics. Video
+frame i maps to paired row i, independent of wall time. A terminal partial
+transition can have one extra video frame; it is excluded from training rows.
+Streams block rather than drop frames, flush on normal failure/interruption,
+and receive a seek index at finalization. Abrupt kills retain partial streams
+where possible and never establish a successful demonstration.
+
+The HTML slider decodes all three videos to the same requested frame before
+updating their displayed canvases and joint/action table. Legacy PNG reviews
+still work. The shared RGB reader also feeds decoded uint8 arrays into the
+existing official LeRobot 0.6.1 conversion. Acceptance/training gates are unchanged.
+Use `--record-format png` only when you explicitly want the old lossless storage.
+
+Offline benchmark on **240 contiguous saved frames per camera, three cameras**,
+including writer finalization and format/frame-count validation, excluding source
+PNG loading:
+
+| Saved source | PNG | H.264 | Recording I/O speedup |
+| --- | ---: | ---: | ---: |
+| Diagnostic attempt 1 | 17.84 s | 0.35 s | 51.5× |
+| Diagnostic attempt 9 | 17.51 s | 0.37 s | 46.7× |
+
+Separate codec tests decoded exactly 240 frames per camera at 640×480/20 Hz;
+mean sampled PSNR was about 42 dB. These are offline serialization results,
+**not measured new episode times or physical success rates**. Focused tests
+cover old/new storage, terminal partial frames, seeking, interruption, HTML and
+25 synthetic frames passed into the pinned official LeRobot dataset writer.
+No new physics run, demonstration collection or bulk dataset QA was performed
+for this repair. The owner must test the simulation and browser review before
+further collection. [Legacy raw field definitions](docs/DATASET.md#raw-attempt-layout).
 
 ## 5. ACT and Diffusion
 
@@ -283,7 +327,7 @@ not override it.
 | Sequential reference pickup, lift, handover, placement and automatic reset | Coordinated Stage 1 controller GUI approval; broad-distribution reliability and hardware transfer |
 | Improved coordinated nominal controller: 2/2 final-revision physics successes, zero forbidden contacts | Owner GUI approval and other starting-pose validation |
 | Approved frozen overhead + two wrist cameras; owner accepted scene/HTML workflow and guide fix | Physical camera-mount registration and hardware calibration |
-| Historical pilot/reference results remain documented; rejected pilot data was deleted by owner approval | No retained or human-accepted demonstration corpus; no new helper collection run by the assistant |
+| Historical pilot/reference results remain documented; rejected pilot data was deleted by owner approval | Diagnostic PNG collection is preserved; current repair has no physical acceptance or newly collected corpus |
 | Official ACT/Diffusion command/config preflight and guarded inference interface | Accepted training corpus, optimizer updates, trained inference and learned task success |
 
 The owner now controls dataset generation through `scripts/collect_demos.py`.
@@ -291,12 +335,12 @@ The former 12-case pilot and the rejected `coordinated_pilot_10` batch and its
 outputs were deleted with explicit approval. Reference benchmark evidence,
 source/configurations, approved cameras and recovery tags are preserved.
 
-The assistant is authorized to implement this helper and verify arguments/pose
-previews only, **not generate another dataset**. No accepted training corpus or
+The assistant is authorized to repair this collector/controller and run focused
+offline tests/encoding benchmarks, **not generate another dataset**. No accepted training corpus or
 trained policy exists. Final protocol collection, augmentation, conversion and
 training retain their separate approval gates. The earlier 100/20/100 design is
-historical context, not authorization to collect. Controller, cameras, scene,
-physics, evaluator and action semantics remain unchanged by this helper.
+historical context, not authorization to collect. Cameras, scene, physics, evaluator and action semantics remain unchanged. Lift
+candidate/receiver planning changes await owner physical validation.
 
 ## Code, detailed guides and historical records
 
