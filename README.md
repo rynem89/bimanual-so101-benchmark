@@ -59,18 +59,31 @@ running the next command.** [Camera calibration and frames](docs/SIMULATION.md#c
 ## 3. Expert IK and task execution
 
 ```bash
-python scripts/so101.py expert --output outputs/expert_manual
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/run_manipulation.py --stage full
 ```
 
 The expert executes pickup → lift → handover → basket placement → retreat.
 GUI is the default; the final state stays open for inspection. Close Isaac after
-reviewing it. `--episodes 3` repeats the task with automatic reset between attempts.
+reviewing it. It runs once by default. An episode means one complete task attempt,
+not a recorded demonstration. `python scripts/so101.py expert` is the equivalent
+high-level entry point; the direct command above uses the same coordinated recipe.
 
-The current Stage 1 revision starts right-arm prepositioning **during the left
-lift**, using one shared motion clock. The right waits clear of the transfer
-region, then approaches from its measured pose for handover and placement.
-**This revision awaits your Isaac GUI approval.** Historical pilot successes
+The current revision starts right-arm prepositioning **while the left opens and
+approaches the cube**, using one shared motion clock. The right moves closer and
+lower, waits clear of the donor, then approaches from its measured pose. After
+transfer and initial finger clearance, the donor returns HOME while the receiver
+travels to the basket. **Your GUI approval is still required.** Historical pilot successes
 describe the earlier sequential controller; they do not validate this change.
+
+The revised nominal task passed **two non-recording visible Isaac runs**: all four
+physical stages succeeded with zero forbidden contacts in **134.12 simulated
+seconds**, compared with **153.18 s** for the sequential reference. At 20 Hz this
+means roughly **12.4% fewer observation/action samples** if later recorded.
+Cold collision planning adds wall time while physics is paused; it adds no
+demonstration frames. Geometry- and measured-state-bound caches reuse valid plans
+on subsequent runs. The second run took **249.54 s wall time**, including
+**50.50 s planning**; its new pickup cache is now populated too. No demonstrations
+have been recorded for this revision.
 
 **What calculates the movement?** Our code uses SciPy bounded inverse kinematics
 (IK) to find five arm-joint angles for a requested fingertip pose. It checks the
@@ -84,7 +97,7 @@ the cube is moved by simulated contact, not teleported.
 Planning can take time: `[PLAN]` messages mean CPU collision checks are running
 while physics pauses. Expect `[EPISODE] nominal/1: passed` and
 `[RESULT] passed_requested_stage`. Check `full_task_success`, independent stage
-flags and failures in `outputs/expert_manual/simulation.json`; exit code alone
+flags and failures in `outputs/controller/simulation.json`; exit code alone
 is insufficient. The timestamped `full_*.json` preserves the run. `plans/` stores
 validated planning caches.
 
@@ -184,6 +197,7 @@ not override it.
 | Established by evidence | Still unverified / not approved |
 | --- | --- |
 | Sequential reference pickup, lift, handover, placement and automatic reset | Coordinated Stage 1 controller GUI approval; broad-distribution reliability and hardware transfer |
+| Coordinated nominal controller: 2/2 visible physics successes, zero forbidden contacts | Owner GUI approval and other starting-pose validation |
 | Approved frozen overhead + two wrist cameras; owner accepted scene/HTML workflow and guide fix | Physical camera-mount registration and hardware calibration |
 | 12/12 physical pilot successes, 12/12 automated QA passes, 3/3 selected physical replays | Human acceptance of all 12 demonstrations; the other nine physical replays |
 | Official ACT/Diffusion command/config preflight and guarded inference interface | Accepted training corpus, optimizer updates, trained inference and learned task success |
@@ -195,8 +209,9 @@ cleanup received separate owner approval; it does not authorize learning work.
 Camera/protocol JSON bytes, scene, physics, IK solver, evaluator and action
 semantics remain fixed. Stage 1 authorizes the coordinated controller and your
 manual GUI inspection only. Ten new demonstrations and their HTML reviews wait
-for your explicit Stage 2 approval; no collection, QA, replay or test suites are
-being run for Stage 1. [Earlier pilot details](docs/DATASET.md#measured-pilot-results).
+for your explicit Stage 2 approval. Your subsequent request authorizes focused
+non-recording physics verification and timing, not collection, dataset QA, replay
+or training. [Earlier pilot details](docs/DATASET.md#measured-pilot-results).
 
 ## Code, detailed guides and historical records
 

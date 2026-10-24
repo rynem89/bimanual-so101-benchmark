@@ -287,12 +287,13 @@ Both arms share the clock; planning can pause physical time while the viewer
 renders. Dense collision checks are intentionally costly; they were preserved
 in this consolidation.
 
-For the coordinated lift, both arms use the same joint-linear quintic progress
+For coordinated pickup and return/carry, both arms use the same joint-linear quintic progress
 and a common duration bounded by the larger joint displacement across both arms.
 `coordinated_segment` samples the two moving robots and predicted held cube
 together, with a displacement bound summing both arms' travel. It checks the
-table, basket, self/inter-arm geometry and payload clearance; only the donor's
-finger/cube contact and existing initial table seating allowance are permitted.
+table, basket, self/inter-arm geometry and payload clearance. Before pickup the
+cube is static and neither robot is allowed contact; during carry only the
+holder's finger/cube contact is exempted.
 These are nominal geometric checks, not proof of physical success.
 
 ### Gripping, handover and placement
@@ -302,19 +303,33 @@ It uses actual bilateral pad force and cube motion. The bounded gripper feedback
 adjusts jaw position to maintain preload, with the validated lift feedback enabled.
 A commanded closed jaw or geometric overlap cannot establish possession.
 
-During the left lift, the right simultaneously moves to a checked waiting pose
-120–200 mm back along an existing handover IK approach axis. It waits there during
-left transport; transport collision checks include this actual receiver pose.
+During left opening and pregrasp, the right moves to a reachable joint-space
+portion of an existing handover IK solution. Its actual TCP must be nearer the
+transfer region and lower than HOME. This replaces the unreachable Cartesian
+offsets that stopped the preceding revision before either arm coordinated.
+The receiver waits there during donor grasp/lift/transport; all those collision
+checks include its actual pose.
 The final receiver plan starts from measured right joints, not HOME, and follows
 checked approach waypoints. This Stage 1 revision awaits the owner's GUI test;
-the earlier physical reference results apply to the preceding sequential version.
+the earlier 12-attempt results apply to the preceding sequential version.
 The receiver then establishes light bilateral contact and acquires preload. The left opens from
 its measured loaded pose; a checked outward clearance can remove residual fixed
 finger contact. Right-only support must persist for three seconds before transfer
-is credited. Donor withdrawal is checked against the receiver and held cube.
-The right then moves above/into the basket, opens, retreats, and the cube must
+is credited. Initial donor separation retains its contact-aware clearance path;
+the subsequent return HOME overlaps right travel to the basket. Every paired
+segment checks both moving arms and the right-held cube. The receiver then opens,
+retreats, and the cube must
 settle inside the interior on its floor. The small observed handover dip is
 measured in transfer diagnostics; it is not a commanded teleport or regrasp trick.
+
+Both raw `run_manipulation.py --stage full` and `so101.py expert` now default to
+continuous motion, 20 Hz targets and grip feedback from lift. The nominal visible
+non-recording verification completed all independent stages with zero forbidden
+contacts in 134.1167 s of task time. Actual velocity measurements showed both
+arms moving for 7.75 s during pregrasp and 14.18 s during donor return/bin carry.
+Cold CPU planning cost is separate from physical task duration. The new paired
+pickup plan is cached only with matching source/geometry, both arm paths and
+measured cube/start state; pose changes invalidate it.
 
 ### Reset and independent evaluation
 

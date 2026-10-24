@@ -274,3 +274,41 @@ reference benchmark match the pre-cleanup record. The pilot's file/size/mtime
 inventory also matches. No broad CPU or physical regression was repeated, and no
 new physical success, collection or training is claimed. Exact removals, final
 counts and approved Git integration are recorded in the maintained code map.
+
+## Coordinated pickup and return/bin carry — 2026-10-24
+
+The user reported that `c843b5d` never prepositioned the receiver and rejected all
+120–200 mm waiting-pose IK offsets. That failed attempt is retained under
+`outputs/coordinated_stage1/`; it is not a success. The replacement uses reachable
+joint-space preparation during donor opening/pregrasp, checks the static cube,
+includes the waiting arm during lift/transport, and overlaps the cleared donor's
+return with receiver bin travel. The raw `--stage full` defaults now match the
+continuous 20 Hz grip-feedback recipe. No cube/camera/physics/evaluator change.
+
+Actual visible Isaac runs, no recording, both with `--exit-after` solely to close
+at completion:
+
+| Command after environment activation | Independent result | Task sim s | Process wall s | Stage planning wall s |
+| --- | --- | ---: | ---: | ---: |
+| `python scripts/run_manipulation.py --stage full --exit-after --output-dir outputs/controller/coordinated_v2_verify` | all four stages true, zero forbidden contacts | 134.116667 | 441.592990 | 230.854179 |
+| `python scripts/run_manipulation.py --stage full --exit-after` | all four stages true, zero forbidden contacts | 134.116667 | 249.540944 | 50.504387 |
+
+The second run used the final source, including the new state-bound preposition
+cache; all eight reported runtime source SHA-256 values match the committed files.
+The first run preceded that caller-only cache addition; motion/planner source and
+independent results are unchanged. Nine actually checked, state-bound derived
+plans from the first run primed the raw command's plan directory. Earlier cache
+versions were copied to `/tmp/so101-pre-v2-default-plan-cache`; original reports,
+reference benchmark and raw datasets were not removed or rewritten.
+
+Measured qd (>0.02 rad/s in at least one arm joint on each robot) confirms 7.75 s
+of simultaneous pregrasp motion and 14.1833 s during donor return/bin carry.
+Against the preserved nominal sequential reference's 153.183333 s, task time is
+12.45% shorter; roughly 12.4% fewer 20 Hz paired rows are expected if later
+recorded. This is not a new dataset-size measurement. Cold planning pauses
+physics and creates no training rows. The second wall time is partly cached,
+not a fully warm throughput benchmark; its 49.06 s preposition computation filled
+that new cache for subsequent runs. Other cube poses and human visual acceptance
+remain unverified. No broad test suite, dataset QA, replay, collection, augmentation
+or training ran. Existing camera/protocol JSON bytes and 12 pilot recordings stay
+unchanged. The normal command retains the GUI at completion for owner review.

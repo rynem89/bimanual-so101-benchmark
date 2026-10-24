@@ -29,13 +29,13 @@ parser.add_argument('--episodes',type=int,default=1)
 parser.add_argument('--output-dir',type=Path,default=Path('outputs/controller'))
 parser.add_argument('--exit-after',action='store_true',help='Close the GUI after evaluation instead of preserving the final view')
 parser.add_argument('--handover-mode',choices=('baseline','staged'),default='staged')
-parser.add_argument('--motion-mode',choices=('legacy','continuous'),default='legacy')
+parser.add_argument('--motion-mode',choices=('legacy','continuous'),default='continuous')
 parser.add_argument('--viewer-delay',type=float,default=0.,help='Optional wall seconds per physics tick, GUI only')
 parser.add_argument('--suite',choices=('nominal','perturb','negative'),default='nominal')
 parser.add_argument('--case',default='nominal',help='Fixed cube pose from benchmark_core.EVALUATION_CASES')
 parser.add_argument('--record-dir',type=Path,help='Write 20 Hz RGB expert attempts, successes and failures')
-parser.add_argument('--expert-hz',type=int,choices=(20,60),default=60)
-parser.add_argument('--grip-feedback-from-lift',action='store_true',help='Apply the existing bounded force servo during lift/hold as well as transport')
+parser.add_argument('--expert-hz',type=int,choices=(20,60),default=20)
+parser.add_argument('--grip-feedback-from-lift',action=argparse.BooleanOptionalAction,default=True,help='Apply the existing bounded force servo during lift/hold as well as transport')
 parser.add_argument('--cases-file',type=Path,help='Explicit named cube cases and split; all cases are attempted')
 parser.add_argument('--split',choices=('train','validation','heldout'),default='train')
 parser.add_argument('--policy-socket',type=Path,help='20 Hz learned policy in the isolated Python 3.12 environment')
@@ -67,7 +67,7 @@ from scipy.spatial.transform import Rotation
 from benchmark_env import BenchmarkEnv, configure_cameras
 from benchmark_core import EVALUATION_CASES, JointPath, policy_boundary, quintic, trajectory_limits, transfer_metrics
 from so101_model import SO101Model, calibrate, jsonable, transform, apply, box_mesh, LINK_NAMES
-from so101_planning import (plan_pickup, plan_lift, plan_coordinated_lift, plan_transport, plan_receiver, plan_donor_clearance, plan_placement,
+from so101_planning import (plan_pickup, plan_lift, plan_receiver_preposition, plan_transport, plan_receiver, plan_donor_clearance, plan_placement,
                            transport_fingerprint, CollisionWorld, fingerprint, valid_cache, CACHE_STATE_ATOL)
 
 
@@ -326,29 +326,30 @@ class Episode:
             raise RuntimeError(f'Joint tracking error {np.rad2deg(error):.2f} degrees in {phase}')
         return self.check_fk()
 
-    def move_coordinated(self, left_start, left_end, right_start, right_end, jaw_target):
-        """Execute the coupled-checked lift with one progress clock for both arms.
+    def move_coordinated(self, left_start, left_end, right_start, right_end, phase, contact=False, jaw_target=None):
+        """Execute a coupled-checked segment with one progress clock for both arms.
 
-        Common quintic timing matches coordinated_segment exactly. Both targets
-        enter the same existing 20 Hz action; left grip feedback and all measured
-        force/evaluator guards remain active. The receiver never contacts the cube
-        during this waiting-pose move.
+        Both targets enter the existing held 20 Hz action. Precontact cube-drift,
+        grip-feedback, actual contact and independent evaluator guards stay active.
         """
-        self.phase='lift_with_receiver_preposition';self.contact_allowed=True
+        self.phase=phase;self.contact_allowed=contact
         starts=np.asarray([left_start,right_start]);ends=np.asarray([left_end,right_end])
         delta=ends-starts
         duration=max(1.,float(np.abs(delta).max())*1.875/.35)
         for side,change in zip(('left','right'),delta):
             self.nominal_trajectory_peaks.append(dict(phase=self.phase,side=side,duration_s=duration,
                                                       **trajectory_limits(change,duration)))
-        self.motion_timing.append(dict(phase=self.phase,coordinated=True,
-            moving_s=(math.ceil(duration/self.dt)+1)*self.dt,settling_s=90*self.dt))
+        timing=dict(phase=self.phase,coordinated=True,both_arms_moving_s=0.,
+            moving_s=(math.ceil(duration/self.dt)+1)*self.dt,settling_s=90*self.dt)
+        self.motion_timing.append(timing)
         print('[PHASE]',self.phase,flush=True)
         for u in np.linspace(0,1,math.ceil(duration/self.dt)+1):
             targets=starts+delta*quintic(u)
-            targets[0,-1]=jaw_target
+            if jaw_target is not None:targets[0,-1]=jaw_target
             self.right_target=targets[1].copy()
             self.step(targets[0])
+            if np.all(np.max(np.abs(self.env.frame.qd[:,:5]),axis=1)>.02):
+                timing['both_arms_moving_s']+=self.dt
         self.right_target=ends[1].copy()
         for _ in range(90):self.step(self.left_target)
         for side,goal in zip(('left','right'),ends):
@@ -464,8 +465,32 @@ class Episode:
             self.phase='plan_pickup'
             result['approach_plan_evidence_path']=str(self.plan_dir/'plan.json')
             raise RuntimeError('No validated approach path: '+plan.get('failure','IK/collision feasibility rejected'))
+        receiver_knots=None
+        if options.stage in ('transport','handover','full'):
+            self.phase='plan_receiver_preposition'
+            waypoints[0]=self.measured_q()
+            right_start=self.measured_q('right');cube_pose=self.env.frame.cube_pose()
+            # Like the other stage caches, bind the full paired path and exact
+            # measured object/start state; a new pose never skips path checks.
+            context=np.r_[np.asarray(waypoints).ravel(),right_start,cube_pose.ravel()]
+            key=fingerprint(self.model)+hashlib.sha256(inspect.getsource(plan_receiver_preposition).encode()).hexdigest()
+            cache_path=self.plan_dir/'receiver_preposition_plan.json'
+            staging=json.loads(cache_path.read_text()) if cache_path.exists() else {}
+            if not valid_cache(staging,key,context=context):
+                staging=compute_plan(plan_receiver_preposition,self.model,waypoints,right_start,cube_pose)
+                staging.update(fingerprint=key,context=context)
+                cache_path.write_text(json.dumps(jsonable(staging),indent=2))
+            else:print('[CACHE] receiver pickup preposition: paired checks reused',flush=True)
+            result['receiver_preposition_plan']=staging
+            if staging['selected'] is None:raise RuntimeError('No safe coordinated pickup/receiver path')
+            receiver_knots=[np.asarray(q) for q in staging['selected']['right_waypoints']]
         for i,phase in enumerate(('open','pregrasp','grasp')):
-            result[phase+'_fk']=self.move(waypoints[i],waypoints[i+1],phase)
+            if receiver_knots is None:
+                result[phase+'_fk']=self.move(waypoints[i],waypoints[i+1],phase)
+            else:
+                paired=self.move_coordinated(waypoints[i],waypoints[i+1],receiver_knots[i],receiver_knots[i+1],phase)
+                result[phase+'_fk']=paired['left']
+                result[phase+'_receiver_fk']=paired['right']
         result['grasp_tcp_error_mm']=float(np.linalg.norm(self.tcp()-np.array(plan['targets'][1]))*1000)
         if result['grasp_tcp_error_mm']>3:raise RuntimeError('Grasp TCP error >3mm')
         result['approach_success']=True
@@ -476,7 +501,8 @@ class Episode:
         closed=waypoints[-1].copy()
         closure_end=closed.copy();closure_end[-1]=np.deg2rad(-5)
         pose=self.env.frame.cube_pose()
-        closure_check=self.validate_segment('left_closure',CollisionWorld(self.model,pose[:3,3],cube_rotation=pose[:3,:3]),closed,closure_end,cube_contact=True)
+        closure_check=self.validate_segment('left_closure',CollisionWorld(self.model,pose[:3,3],
+            other_q=self.measured_q('right'),cube_rotation=pose[:3,:3]),closed,closure_end,cube_contact=True)
         if not closure_check['safe']:raise RuntimeError(f'Unsafe closure: {closure_check}')
         result['closure_path']=closure_check
         # Stop closing once both pads load the cube; do not drive the servo to
@@ -500,32 +526,21 @@ class Episode:
         measured=self.measured_q()
         lift_key=fingerprint(self.model)+hashlib.sha256(inspect.getsource(plan_lift).encode()).hexdigest()
         pose=self.env.frame.cube_pose();local=self.cube_in_tcp()
-        context=np.r_[measured,pose.ravel(),local.ravel()]
+        context=np.r_[measured,pose.ravel(),local.ravel(),self.measured_q('right')]
         lift_path=self.plan_dir/'lift_plan.json'
         lift=json.loads(lift_path.read_text()) if lift_path.exists() else {}
         if not valid_cache(lift,lift_key,context=context):
             # Keep the task's intended lift target separate from contact seating.
             # Actual settled cube pose/transform still define collision geometry.
             xy=EVALUATION_CASES[self.case][0]
-            lift=compute_plan(plan_lift,self.model,measured,held=True,cube=pose[:3,3],cube_rotation=pose[:3,:3],cube_in_tcp=local,target=[*xy,.08])
+            lift=compute_plan(plan_lift,self.model,measured,held=True,cube=pose[:3,3],cube_rotation=pose[:3,:3],cube_in_tcp=local,target=[*xy,.08],other_q=self.measured_q('right'))
             lift['fingerprint']=lift_key;lift['context']=context
             lift_path.write_text(json.dumps(jsonable(lift),indent=2))
         result['lift_plan']=lift
         if not lift['safe']:raise RuntimeError(f'Lift path rejected: {lift}')
         if options.grip_feedback_from_lift:self.active_grips['left']=closed[-1]
         start=self.measured_q();end=np.array(lift['lift_q'])
-        if options.stage in ('transport','handover','full'):
-            self.phase='plan_coordinated_lift'
-            right_start=self.measured_q('right')
-            coordinated=compute_plan(plan_coordinated_lift,self.model,start,end,right_start,self.cube_in_tcp())
-            result['coordinated_lift_plan']=coordinated
-            if coordinated['selected'] is None:
-                raise RuntimeError('No collision-checked simultaneous lift/receiver waiting path')
-            paired_fk=self.move_coordinated(start,end,right_start,
-                np.asarray(coordinated['selected']['right_goal']),closed[-1])
-            result['lift_fk']=paired_fk['left'];result['receiver_wait_fk']=paired_fk['right']
-        else:
-            result['lift_fk']=self.move(start,end,'lift',contact=True,jaw_target=closed[-1])
+        result['lift_fk']=self.move(start,end,'lift',contact=True,jaw_target=closed[-1])
         target=end.copy();target[-1]=closed[-1]
         self.phase='hold'
         hold=[]
@@ -704,15 +719,18 @@ class Episode:
         if selected is None:raise RuntimeError('No validated withdrawal/bin path; see placement_plan.json')
         self.contact_arms.discard('Left_Robot')
         waypoints=[np.array(q) for q in selected['left_departure']['waypoints']]
+        paired=selected['coordinated_return']
+        first=paired['left_start_index']
         if options.motion_mode=='continuous' and selected['left_departure'].get('kind')!='joint_transit':
             self.move(waypoints[0],waypoints[1],'left_separation',contact=True)
-            self.follow(waypoints[1:18],'left','left_cartesian_retreat',.2)
-            for i in range(17,len(waypoints)-1):
-                self.move(waypoints[i],waypoints[i+1],f'left_retreat_{i}',contact=True)
+            self.follow(waypoints[1:first+1],'left','left_cartesian_retreat',.2)
         else:
-            for i in range(len(waypoints)-1):
-                self.move(waypoints[i],waypoints[i+1],f'left_retreat_{i}',contact=True)
-        self.move_right(self.measured_q('right'),np.array(selected['right_goal']),'right_to_bin')
+            for i in range(first):
+                self.move(waypoints[i],waypoints[i+1],f'left_separation_{i}',contact=True)
+        right_knots=[np.asarray(q) for q in paired['right_waypoints']]
+        for i in range(len(right_knots)-1):
+            self.move_coordinated(waypoints[first+i],waypoints[first+i+1],right_knots[i],right_knots[i+1],
+                                  f'donor_return_with_bin_{i}',contact=True)
         right_model=copy.copy(self.model);right_model.base=self.model.base.copy();right_model.base[0,3]=.25
         cube_pose=right_model.tcp_pose(self.measured_q('right'))@self.cube_in_tcp('right')
         vertices=apply(cube_pose,box_mesh(np.zeros(3),np.full(3,.04),'cube').vertices)
@@ -947,8 +965,7 @@ def main():
                     result['independent_evaluation']=episode.env.evaluator.report()
                     result['failure_category']=(episode.env.evaluator.failure or
                         {'reset':'reset_prerequisite','close':'failed_grasp','right_close':'failed_transfer',
-                         'hold':'failed_lift','lift':'failed_lift',
-                         'lift_with_receiver_preposition':'failed_lift'}.get(episode.phase)
+                         'hold':'failed_lift','lift':'failed_lift'}.get(episode.phase)
                         or ('planning_rejection' if any(word in error.lower() for word in ('path','planning','collision','unsafe')) else 'controller_guard'))
                     result['transfer_trace']=list(episode.transfer_trace)
                     result['transfer_metrics']=transfer_metrics(episode.transfer_trace)

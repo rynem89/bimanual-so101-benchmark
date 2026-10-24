@@ -238,13 +238,13 @@ def plan_pickup(model, cube=(-.34,-.04,.02), rotation=None):
     return {'waypoints':[], 'ik':evidence}
 
 
-def plan_lift(model, grasp_q, held=False, cube=(-.34,-.04,.02), cube_rotation=None, cube_in_tcp=None, target=None):
+def plan_lift(model, grasp_q, held=False, cube=(-.34,-.04,.02), cube_rotation=None, cube_in_tcp=None, target=None, other_q=None):
     """Plan a 58 mm lift with achievable tilt and a predicted payload envelope.
 
     The payload transform is a planning assumption, never a simulator attachment.
     Execution must independently verify bilateral force and object following.
     """
-    world=CollisionWorld(model,cube,cube_rotation=cube_rotation)
+    world=CollisionWorld(model,cube,other_q=other_q,cube_rotation=cube_rotation)
     closed=np.array(grasp_q).copy()
     if not held:closed[-1]=np.deg2rad(-5)
     closure=world.segment(np.array(grasp_q),closed,cube_contact=True)
@@ -292,88 +292,90 @@ def plan_lift(model, grasp_q, held=False, cube=(-.34,-.04,.02), cube_rotation=No
     return {'safe':False,'failure':'no_lift_candidate','rejections':rejections}
 
 
-def coordinated_segment(model, left_start, left_goal, right_start, right_goal, cube_in_left_tcp, margin=.002):
-    """Check simultaneous joint-linear motion and the measured left payload.
+def coordinated_segment(model, left_start, left_goal, right_start, right_goal,
+                        cube_in_tcp=None, margin=.002, holder='left', cube_pose=None):
+    """Check common-progress joint motion with an unheld or carried 40 mm cube.
 
-    Both arms use the same quintic progress during execution. The sampling bound
-    sums BOTH arms' travel, so it covers relative inter-arm/payload movement,
-    rather than checking each arm against the other's initial pose. This lift
-    starts with the cube on the table; retain the existing 0.2 mm seating allowance.
-    No physical attachment is created, and measured contacts remain authoritative.
+    Relative travel bounds include both robots. Before pickup neither arm may
+    contact the static cube. For a payload only its holder's fingers are exempt;
+    the existing initial donor/table seating allowance applies only to left lift.
     """
     starts=np.asarray([left_start,right_start],dtype=float)
     goals=np.asarray([left_goal,right_goal],dtype=float)
     if starts.shape!=(2,6) or goals.shape!=(2,6) or not np.isfinite([starts,goals]).all():
         raise ValueError('Finite (2,6) coordinated endpoints required')
-    cube_in_left_tcp=np.asarray(cube_in_left_tcp,dtype=float)
-    if cube_in_left_tcp.shape!=(4,4) or not np.isfinite(cube_in_left_tcp).all():
-        raise ValueError('Finite 4x4 measured payload transform required')
+    if holder not in (None,'left','right'):raise ValueError('Unknown payload holder')
+    held=None if holder is None else (0 if holder=='left' else 1)
+    attachment=np.asarray(cube_pose if held is None else cube_in_tcp,dtype=float)
+    if attachment.shape!=(4,4) or not np.isfinite(attachment).all():
+        raise ValueError('Finite 4x4 cube pose or measured payload transform required')
     spacing=margin-CACHE_MOTION_RESERVE_M
     if spacing<=0:raise ValueError('Margin must exceed motion reserve')
     right=copy.copy(model);right.base=model.base.copy();right.base[0,3]=.25
-    left_world=CollisionWorld(model,other_q=starts[1],other_base=right.base)
-    right_world=CollisionWorld(right,other_q=starts[0],other_base=model.base)
-    payload=box_mesh(np.zeros(3),np.full(3,.04),'payload')
+    worlds=[CollisionWorld(model,other_q=starts[1],other_base=right.base),
+            CollisionWorld(right,other_q=starts[0],other_base=model.base)]
+    models=(model,right);payload=box_mesh(np.zeros(3),np.full(3,.04),'payload')
     delta=goals-starts
     count=max(2,int(np.ceil(.6*np.abs(delta).sum()/spacing))+1)
-    # Reject unsafe endpoints before spending time on the interior samples.
     for index in (0,count-1,*range(1,count-1)):
         q=starts+delta*(index/(count-1))
-        pose=model.tcp_pose(q[0])@cube_in_left_tcp
+        pose=attachment if held is None else models[held].tcp_pose(q[held])@attachment
         vertices=apply(pose,payload.vertices)
-        left_meshes=model.world_meshes(q[0]);right_meshes=right.world_meshes(q[1])
+        meshes=[m.world_meshes(joints) for m,joints in zip(models,q)]
         faults=[]
-        for side,world,other in ((0,left_world,right_meshes),(1,right_world,left_meshes)):
-            world.right=other
-            world.right_bounds=np.array([(v.min(0),v.max(0)) for _,v,_ in other])
+        for side,world in enumerate(worlds):
+            world.right=meshes[1-side]
+            world.right_bounds=np.array([(v.min(0),v.max(0)) for _,v,_ in world.right])
             world.cube=pose[:3,3];world.cube_rotation=pose[:3,:3];world.cube_vertices=vertices
             faults.extend(('left:' if side==0 else 'right:')+fault
-                          for fault in world.check(q[side],margin,cube_contact=side==0))
-        if vertices[:,2].min()<-.0002:faults.append('payload/table')
-        obstacles=[entry for entry in left_meshes if entry[0].link not in ('gripper','jaw')]
-        obstacles+=right_meshes+[(m,m.vertices,np.eye(4)) for m in left_world.bin]
-        for mesh,verts,mt in obstacles:
-            if (np.all(vertices.min(0)<=verts.max(0)+.003)
-                    and np.all(verts.min(0)<=vertices.max(0)+.003)
-                    and intersect_hulls(payload,pose,mesh,mt,.003)):
-                faults.append('payload/'+mesh.link)
+                          for fault in world.check(q[side],margin,cube_contact=side==held))
+        if held is not None:
+            floor=-.0002 if holder=='left' else .002
+            if vertices[:,2].min()<floor:faults.append('payload/table')
+            obstacles=[entry for entry in meshes[held] if entry[0].link not in ('gripper','jaw')]
+            obstacles+=meshes[1-held]+[(m,m.vertices,np.eye(4)) for m in worlds[0].bin]
+            for mesh,verts,mt in obstacles:
+                if (np.all(vertices.min(0)<=verts.max(0)+.003)
+                        and np.all(verts.min(0)<=vertices.max(0)+.003)
+                        and intersect_hulls(payload,pose,mesh,mt,.003)):
+                    faults.append('payload/'+mesh.link)
         if faults:
             return dict(safe=False,samples=count,failed_sample=index,progress=index/(count-1),faults=sorted(set(faults)))
     return dict(safe=True,samples=count,margin_m=margin,cache_motion_reserve_m=CACHE_MOTION_RESERVE_M)
 
 
-def plan_coordinated_lift(model, left_start, left_goal, right_start, cube_in_left_tcp):
-    """Reach a receiver-side waiting pose while the donor lifts, without contact.
+def plan_receiver_preposition(model, left_waypoints, right_start, cube_pose):
+    """Move the receiver nearer/lower during donor opening and pickup approach.
 
-    Reuse the existing coupled handover IK, then back the receiver away along
-    its insertion axis by 120--200 mm. This avoids prescribing an independently
-    infeasible six-dimensional waiting pose to the five-joint SO-101 arm.
-    Every candidate must pass the coupled path check; there is no unchecked or
-    silently serial fallback when simultaneous motion cannot be planned.
+    A joint-space portion of an existing handover IK solution is reachable by
+    construction. Do not prescribe the unreachable 120--200 mm Cartesian offsets
+    that caused the previous revision to stop before moving. All paired pickup
+    segments still require full checks against the unheld cube and both robots.
     """
     right=copy.copy(model);right.base=model.base.copy();right.base[0,3]=.25
-    result=dict(selected=None,left_start=left_start,left_goal=left_goal,right_start=right_start,
-                cube_in_left_tcp=cube_in_left_tcp,rejections=[])
-    references=handover_candidates(model,[0,-.27,.18],seeds=12,alternate=True,cube_in_left_tcp=cube_in_left_tcp)
-    result['handover_ik_candidates']=len(references)
+    local=np.linalg.inv(model.tcp_pose(left_waypoints[-1]))@cube_pose
+    references=handover_candidates(model,[0,-.27,.18],seeds=12,alternate=True,cube_in_left_tcp=local)
     references.sort(key=lambda item:np.linalg.norm(item['right_q']-right_start))
+    result=dict(selected=None,rejections=[],handover_ik_candidates=len(references))
+    home=right.tcp_pose(right_start)[:3,3];transfer=np.array([0,-.27,.18])
     for reference in references[:3]:
-        pose=right.tcp_pose(reference['right_q'])
-        for clearance in (.12,.16,.20):
-            target=pose[:3,3]+clearance*pose[:3,2]
-            candidates=right.ik(target,approach=-pose[:3,2],opening_deg=45,
-                                reference=reference['right_q'],seeds=2)
-            if not candidates:
-                result['rejections'].append(dict(target_world_m=target,faults=['waiting_pose_ik']))
-            candidates.sort(key=lambda item:np.linalg.norm(item['q']-right_start))
-            for candidate in candidates[:2]:
-                if candidate['limit_margin_deg']<3:continue
-                check=coordinated_segment(model,left_start,left_goal,right_start,candidate['q'],cube_in_left_tcp)
-                if check['safe']:
-                    result['selected']=dict(right_goal=candidate['q'],standby_tcp_world_m=target,
-                                            handover_clearance_m=clearance,ik=candidate,check=check)
-                    return result
-                result['rejections'].append(dict(target_world_m=target,check=check))
+        for fraction in (.55,.45,.65):
+            standby=right_start+fraction*(reference['right_q']-right_start);standby[-1]=np.pi/4
+            position=right.tcp_pose(standby)[:3,3]
+            if position[2]>home[2]-.005 or np.linalg.norm(position-transfer)>np.linalg.norm(home-transfer)-.05:
+                continue
+            knots=[right_start,right_start+.25*(standby-right_start),standby,standby]
+            checks=[]
+            for i in range(3):
+                check=coordinated_segment(model,left_waypoints[i],left_waypoints[i+1],knots[i],knots[i+1],
+                                           holder=None,cube_pose=cube_pose,margin=.001)
+                checks.append(check)
+                if not check['safe']:break
+            if len(checks)==3 and all(check['safe'] for check in checks):
+                result['selected']=dict(right_waypoints=knots,standby_tcp_world_m=position,
+                                        reference_fraction=fraction,checks=checks)
+                return result
+            result['rejections'].append(dict(fraction=fraction,checks=checks))
     return result
 
 
@@ -639,7 +641,21 @@ def plan_placement(model, left_q, right_q, cube_in_right_tcp, continuous=False):
                 if not opening['safe']:result['rejections'].append(opening);continue
                 travel=carried_segment(right,right_q,goal,cube_in_right_tcp,other_q=home,other_base=model.base)
                 if not travel['safe']:result['rejections'].append(travel);continue
+                first=1 if departure.get('kind')=='joint_transit' else 17
+                tail=np.asarray(departure['waypoints'][first:])
+                distances=np.abs(np.diff(tail,axis=0)).sum(axis=1)
+                progress=np.r_[0.,np.cumsum(distances)/distances.sum()]
+                right_knots=[right_q+u*(goal-right_q) for u in progress]
+                paired=[]
+                for i in range(len(tail)-1):
+                    proof=coordinated_segment(model,tail[i],tail[i+1],right_knots[i],right_knots[i+1],
+                                               cube_in_right_tcp,holder='right',margin=.001)
+                    paired.append(proof)
+                    if not proof['safe']:break
+                if not all(proof['safe'] for proof in paired):
+                    result['rejections'].append(dict(coordinated_return=paired));continue
                 result['selected']={'left_departure':departure,'right_goal':goal,
+                                    'coordinated_return':dict(left_start_index=first,right_waypoints=right_knots,checks=paired),
                                     'right_open':opened,'carry_check':travel,'opening_check':opening,
                                     'predicted_release_cube_pose':pose,'ik':candidate}
                 return result
