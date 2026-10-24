@@ -101,6 +101,39 @@ class EvaluationTests(unittest.TestCase):
 
 
 class TrajectoryTests(unittest.TestCase):
+    def test_interval_grid_bounds_paired_motion_without_receiver_stop(self):
+        from benchmark_core import CoordinatedJointPath,JointPath,validation_grid
+        left=np.zeros((3,6));left[1,:2]=[.04,.02];left[2,:3]=[.04,1.1,-.7]
+        right=np.zeros((2,6));right[1,:3]=[.8,-.5,.3]
+        paths=[JointPath(left),JointPath(right)]
+        radii=[np.array([.5,.4,.3,.2,.12,.08])]*2
+        spacing=.002;grid=validation_grid(paths,radii,spacing)
+        self.assertEqual(grid[0],0.);self.assertEqual(grid[-1],1.)
+        self.assertTrue(np.all(np.diff(grid)>0))
+        for fraction in (.25,.5,.75):
+            middle=grid[:-1]+fraction*np.diff(grid)
+            nearest=grid[:-1] if fraction<=.5 else grid[1:]
+            travel=sum(np.abs(path.spline(middle)-path.spline(nearest))@r for path,r in zip(paths,radii))
+            self.assertLessEqual(float(travel.max()),spacing/2+1e-10)
+        for lead in (0.,.2):
+            paired=CoordinatedJointPath(left,right[0],right[1],lead=lead)
+            grid=paired.validation_grid(radii,spacing)
+            np.testing.assert_allclose(paired.position(0),[left[0],right[0]])
+            np.testing.assert_allclose(paired.position(1),[left[-1],right[-1]])
+            np.testing.assert_allclose(paired.position(paired.knots[1])[0],left[1])
+            self.assertTrue(np.all(np.diff(grid)>0))
+            for fraction in (.25,.5,.75):
+                middle=grid[:-1]+fraction*np.diff(grid)
+                nearest=grid[:-1] if fraction<=.5 else grid[1:]
+                delta=np.abs(np.array([paired.position(u) for u in middle])-np.array([paired.position(u) for u in nearest]))
+                travel=sum(delta[:,side]@r for side,r in enumerate(radii))
+                self.assertLessEqual(float(travel.max()),spacing/2+1e-10)
+            # No receiver stop at the donor's internal clearance waypoint.
+            u=paired.knots[1]
+            self.assertGreater(np.linalg.norm(paired.position(u+1e-5)[1]-paired.position(u-1e-5)[1]),1e-6)
+            for side in ('left','right'):
+                self.assertLessEqual(float(np.max(paired.limits(side)['velocity_rad_s'])),.35+1e-10)
+
     def test_transfer_metrics_include_departure_and_expose_trace_gaps(self):
         rows=[]
         for i,height in enumerate((.18,.179,.172,.175,.175)):

@@ -272,6 +272,88 @@ class JointPath:
                     jerk_rad_s3=d3*v**3+3*d2*v*a+d1*j)
 
 
+class CoordinatedJointPath:
+    """Checked donor clearance knots with uninterrupted receiver quintic travel.
+
+    Donor legs retain their existing joint-linear geometry. Their rest-to-rest
+    durations share one overall clock with receiver travel, with no intermediate
+    settling pause. Optional receiver lead allows the payload to clear first.
+    """
+    def __init__(self, left_waypoints, right_start, right_goal, speed=.35, lead=0.):
+        self.left=np.asarray(left_waypoints,dtype=float)
+        self.right=np.asarray([right_start,right_goal],dtype=float)
+        if (self.left.ndim!=2 or self.left.shape[1]!=6 or len(self.left)<2 or self.right.shape!=(2,6)
+                or not np.isfinite(self.left).all() or not np.isfinite(self.right).all()
+                or not 0<=lead<1 or speed<=0):raise ValueError('Valid paired path, speed and lead required')
+        self.delta=np.diff(self.left,axis=0);self.right_delta=self.right[1]-self.right[0]
+        durations=np.maximum(1.,1.875*np.abs(self.delta).max(axis=1)/speed)
+        self.duration=max(float(durations.sum())/(1-lead),1.875*float(np.abs(self.right_delta).max())/speed,1.)
+        self.knots=lead+(1-lead)*np.r_[0.,np.cumsum(durations)/durations.sum()]
+        self.bounds=np.array([np.stack((self.left.min(0),self.left.max(0)),axis=1),
+                              np.stack((self.right.min(0),self.right.max(0)),axis=1)])
+
+    def position(self,u):
+        u=float(np.clip(u,0,1))
+        if u<=self.knots[0]:left=self.left[0].copy()
+        else:
+            index=min(len(self.delta)-1,int(np.searchsorted(self.knots,u,side='right')-1))
+            local=(u-self.knots[index])/(self.knots[index+1]-self.knots[index])
+            left=self.left[index]+self.delta[index]*quintic(local)
+        return np.array([left,self.right[0]+self.right_delta*quintic(u)])
+
+    def limits(self,side):
+        if side=='right':return trajectory_limits(self.right_delta,self.duration)
+        values=[trajectory_limits(delta,self.duration*(b-a)) for delta,a,b in zip(self.delta,self.knots[:-1],self.knots[1:])]
+        return {key:np.max([row[key] for row in values],axis=0) for key in values[0]}
+
+    def validation_grid(self,radii,spacing):
+        if spacing<=0:raise ValueError('Positive geometry spacing required')
+        def peak(a,b):
+            x=.5 if a<=.5<=b else (a if a>.5 else b)
+            return 30*x*x*(1-x)*(1-x)
+        breaks=np.unique(np.r_[0.,self.knots]);grid=[0.]
+        for start,end in zip(breaks[:-1],breaks[1:]):
+            pieces=np.linspace(start,end,9)
+            index=min(len(self.delta)-1,int(np.searchsorted(self.knots,(start+end)/2,side='right')-1))
+            for a,b in zip(pieces[:-1],pieces[1:]):
+                bound=float(radii[1]@np.abs(self.right_delta))*peak(a,b)
+                if index>=0:
+                    low,high=self.knots[index:index+2]
+                    bound+=float(radii[0]@np.abs(self.delta[index]))*peak((a-low)/(high-low),(b-low)/(high-low))/(high-low)
+                count=max(1,int(np.ceil(bound*(b-a)/spacing)))
+                grid.extend(np.linspace(a,b,count+1)[1:])
+        return np.asarray(grid)
+
+
+def validation_grid(paths, radii, spacing):
+    """Split at spline knots and bound relative geometry travel per interval.
+
+    Exact derivative extrema give a conservative sample count in each polynomial
+    interval. A brief high-slope section no longer forces the same dense sampling
+    over the entire trajectory. All paths share the same monotone progress.
+    """
+    if spacing<=0 or len(paths)!=len(radii):raise ValueError('Positive spacing and matching paths/radii required')
+    knots=np.unique(np.concatenate([path.spline.x for path in paths]))
+    derivatives=[]
+    for path in paths:
+        group=[]
+        for joint in range(6):
+            poly=PPoly(path.spline.c[:,:,joint],path.spline.x).derivative()
+            roots=poly.derivative().roots(extrapolate=False)
+            group.append((poly,roots[np.isfinite(roots)]))
+        derivatives.append(group)
+    grid=[knots[0]]
+    for low,high in zip(knots[:-1],knots[1:]):
+        bound=0.
+        for group,lengths in zip(derivatives,radii):
+            for (poly,roots),radius in zip(group,lengths):
+                points=np.r_[low,high,roots[(roots>low)&(roots<high)]]
+                bound+=radius*np.abs(poly(points)).max()
+        count=max(1,int(np.ceil(bound*(high-low)/spacing)))
+        grid.extend(np.linspace(low,high,count+1)[1:])
+    return np.asarray(grid)
+
+
 def transfer_metrics(rows):
     if not rows:
         return {}

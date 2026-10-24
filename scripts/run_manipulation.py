@@ -65,7 +65,7 @@ import carb
 import numpy as np
 from scipy.spatial.transform import Rotation
 from benchmark_env import BenchmarkEnv, configure_cameras
-from benchmark_core import EVALUATION_CASES, JointPath, policy_boundary, quintic, trajectory_limits, transfer_metrics
+from benchmark_core import EVALUATION_CASES, JointPath, CoordinatedJointPath, policy_boundary, quintic, trajectory_limits, transfer_metrics
 from so101_model import SO101Model, calibrate, jsonable, transform, apply, box_mesh, LINK_NAMES
 from so101_planning import (plan_pickup, plan_lift, plan_receiver_preposition, plan_transport, plan_receiver, plan_donor_clearance, plan_placement,
                            transport_fingerprint, CollisionWorld, fingerprint, valid_cache, CACHE_STATE_ATOL)
@@ -326,7 +326,7 @@ class Episode:
             raise RuntimeError(f'Joint tracking error {np.rad2deg(error):.2f} degrees in {phase}')
         return self.check_fk()
 
-    def move_coordinated(self, left_start, left_end, right_start, right_end, phase, contact=False, jaw_target=None):
+    def move_coordinated(self, left_start, left_end, right_start, right_end, phase, contact=False, jaw_target=None, trajectory=None):
         """Execute a coupled-checked segment with one progress clock for both arms.
 
         Both targets enter the existing held 20 Hz action. Precontact cube-drift,
@@ -335,8 +335,11 @@ class Episode:
         self.phase=phase;self.contact_allowed=contact
         starts=np.asarray([left_start,right_start]);ends=np.asarray([left_end,right_end])
         delta=ends-starts
-        duration=max(1.,float(np.abs(delta).max())*1.875/.35)
+        duration=trajectory.duration if trajectory is not None else max(1.,float(np.abs(delta).max())*1.875/.35)
         for side,change in zip(('left','right'),delta):
+            if trajectory is not None:
+                self.nominal_trajectory_peaks.append(dict(phase=phase,side=side,duration_s=duration,**trajectory.limits(side)))
+                continue
             self.nominal_trajectory_peaks.append(dict(phase=self.phase,side=side,duration_s=duration,
                                                       **trajectory_limits(change,duration)))
         timing=dict(phase=self.phase,coordinated=True,both_arms_moving_s=0.,
@@ -344,7 +347,7 @@ class Episode:
         self.motion_timing.append(timing)
         print('[PHASE]',self.phase,flush=True)
         for u in np.linspace(0,1,math.ceil(duration/self.dt)+1):
-            targets=starts+delta*quintic(u)
+            targets=starts+delta*quintic(u) if trajectory is None else trajectory.position(u)
             if jaw_target is not None:targets[0,-1]=jaw_target
             self.right_target=targets[1].copy()
             self.step(targets[0])
@@ -569,10 +572,11 @@ class Episode:
             right_start=self.measured_q('right')
             path=self.plan_dir/'handover_plan.json'
             transport=json.loads(path.read_text()) if path.exists() else {}
+            handover_reference=np.asarray(result['receiver_preposition_plan']['selected']['handover_reference_q10'])
             valid=valid_cache(transport,transport_fingerprint(self.model),start_q=start,
-                              right_start=right_start,cube_in_left_tcp=local)
+                              right_start=right_start,cube_in_left_tcp=local,handover_reference=handover_reference)
             if not valid:
-                transport=compute_plan(plan_transport,self.model,start,local,other_q=right_start)
+                transport=compute_plan(plan_transport,self.model,start,local,other_q=right_start,handover_reference=handover_reference)
                 path.write_text(json.dumps(jsonable(transport),indent=2))
             result['transport_plan']=transport
             if transport['selected'] is None:raise RuntimeError('No validated transport path')
@@ -721,16 +725,22 @@ class Episode:
         waypoints=[np.array(q) for q in selected['left_departure']['waypoints']]
         paired=selected['coordinated_return']
         first=paired['left_start_index']
-        if options.motion_mode=='continuous' and selected['left_departure'].get('kind')!='joint_transit':
+        if options.motion_mode=='continuous' and first>=17 and selected['left_departure'].get('kind')!='joint_transit':
             self.move(waypoints[0],waypoints[1],'left_separation',contact=True)
             self.follow(waypoints[1:first+1],'left','left_cartesian_retreat',.2)
         else:
             for i in range(first):
                 self.move(waypoints[i],waypoints[i+1],f'left_separation_{i}',contact=True)
         right_knots=[np.asarray(q) for q in paired['right_waypoints']]
-        for i in range(len(right_knots)-1):
-            self.move_coordinated(waypoints[first+i],waypoints[first+i+1],right_knots[i],right_knots[i+1],
-                                  f'donor_return_with_bin_{i}',contact=True)
+        if paired.get('continuous'):
+            left_knots=[np.asarray(q) for q in paired['left_waypoints']]
+            trajectory=CoordinatedJointPath(left_knots,right_knots[0],right_knots[-1],lead=paired.get('lead',0.))
+            self.move_coordinated(left_knots[0],left_knots[-1],right_knots[0],right_knots[-1],
+                                  'donor_return_with_bin_continuous',contact=True,trajectory=trajectory)
+        else:
+            for i in range(len(right_knots)-1):
+                self.move_coordinated(waypoints[first+i],waypoints[first+i+1],right_knots[i],right_knots[i+1],
+                                      f'donor_return_with_bin_{i}',contact=True)
         right_model=copy.copy(self.model);right_model.base=self.model.base.copy();right_model.base[0,3]=.25
         cube_pose=right_model.tcp_pose(self.measured_q('right'))@self.cube_in_tcp('right')
         vertices=apply(cube_pose,box_mesh(np.zeros(3),np.full(3,.04),'cube').vertices)

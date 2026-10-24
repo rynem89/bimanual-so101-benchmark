@@ -312,3 +312,86 @@ that new cache for subsequent runs. Other cube poses and human visual acceptance
 remain unverified. No broad test suite, dataset QA, replay, collection, augmentation
 or training ran. Existing camera/protocol JSON bytes and 12 pilot recordings stay
 unchanged. The normal command retains the GUI at completion for owner review.
+
+
+## Aligned handover and continuous bin carry — 2026-10-24
+
+The owner requested a lower receiver entrance aligned with donor delivery, direct
+insertion and continuous bin travel during donor return. Maintained changes are
+limited to existing model/planner/trajectory/controller files, focused tests and
+existing guides. Scene, cube reset, cameras, IK solver, physics, evaluator and
+state/action interface are unchanged. No data recording, HTML, dataset QA/replay,
+collection, augmentation, training, new branch, script or documentation file.
+
+Changes: use a reachable 40 mm receiver pregrasp during the checked paired pickup;
+prefer that coupled IK branch when carrying the measured cube; validate a direct
+receiver insertion before attempting global transit. After contact-aware finger
+separation, validate exact shared timing of donor return and uninterrupted
+receiver bin travel. Keep the existing local/global fallback routes. Replace the
+uniform 0.6 m sampling radius with conservative USD frame/mesh-derived per-joint
+radii, extending them for payloads. Bound curve checking per polynomial interval.
+Reuse a separating axis only after current full inflated vertices re-prove
+separation. LP fallback, margins and 0.1 mm cache reserve remain intact.
+
+All physical attempts below used actual visible Isaac physics, one nominal
+attempt each, no recording. `--exit-after` closes the test viewer only; normal
+commands retain the GUI. Failed and slower development candidates are listed,
+not regenerated into an apparent success count.
+
+| Output directory under `outputs/controller/` | Candidate / independent outcome | Episode sim s | Process wall s | Stage planning s |
+| --- | --- | ---: | ---: | ---: |
+| `aligned_v3_verify/` | aligned insertion + conservative spline return; all four stages true, zero forbidden contacts, but slower than the previous controller | 138.333333 | 315.141567 | 105.486940 |
+| `aligned_v3_timed/` | faster 0.25 rad/s insertion rejected by contact guard: premature right/gripper–cube force 0.1677 N; pickup/lift true, handover/placement false | failed at evaluator elapsed 52.716667 s | not a throughput result | not a throughput result |
+| `aligned_v3_final/` | final 0.12 rad/s insertion + shared quintic return; all four stages true, zero forbidden contacts | 114.883333 | 232.242865 | 64.813718 |
+
+The final run ID is `20261024T153140148861Z`. Its independent evaluator elapsed
+111.883333 s; episode time includes the 3 s reset. Against the previous coordinated
+134.116667 s and sequential reference 153.183333 s, the same episode metric is
+14.34% and 25.00% shorter respectively. Fewer 20 Hz rows are an estimate, not a
+measurement of a new dataset. Measured simultaneous arm motion (>0.02 rad/s in
+at least one arm joint on each robot) was 8.383333 s during pregrasp and 7.966667 s
+during the continuous 11.483333 s return/carry phase. No receiver transit/RRT
+phases were executed. Cold receiver planning was 6.61 s and placement 28.43 s;
+first-run planning is still noticeable and is distinct from physical time.
+
+Focused checks, rather than a broad suite: authored mesh/payload displacement
+bounds passed over 12 legal random poses and seven perturbations each; the
+inflated acute-corner/random-rotation collision prefilter matched original LP;
+the complete pickup matched original LP at all 827 queries / 1,495 path samples
+(15.520 s). Actual spline extrema and the new paired trajectory's interval bounds,
+endpoints, receiver continuity and 0.35 rad/s target-speed bounds passed (two
+trajectory tests, 0.056 s). Syntax compilation and diff whitespace checks passed.
+The withdrawal fixture check initially expected the old RRT strategy and failed
+that strategy assertion because the new checked direct route succeeded; its
+assertions now cover both checked routes while retaining endpoint, carried-cube
+and release checks. The revised withdrawal fixture passed in 24.735 s. This geometry fixture is not
+a new physical yaw success.
+
+Ten actually generated derived plan JSON files from the final successful run
+primed the normal command's plan directory. Prior caches were backed up to
+`/tmp/so101-before-aligned-v3-cache-20261024T153607Z`; no pilot, reference report or
+raw evidence was deleted. Cache acceptance still checks source/model fingerprints
+and measured start/payload context; changed inputs trigger fresh planning.
+
+
+The normal entry point was then verified with
+`python scripts/run_manipulation.py --stage full --exit-after`, without recording
+or custom output arguments. Run ID `20261024T153816943492Z` passed all four independent
+stages with zero forbidden contacts in 114.883333 episode sim s,
+168.690171 process wall s and 0.780717 stage planning s. Only the small
+measured donor-release clearance needed fresh planning; other plans/segments
+reused their validated matching context. Its immutable report is
+`outputs/controller/full_20261024T153816943492Z.json`. Both final-revision attempts
+passed (2/2); the earlier failed and slower candidates above remain separate.
+All eight runtime source SHA-256 values in both successful reports match the
+published files. Reports identify the pre-commit Git revision and dirty source
+state rather than claiming the later publication commit existed during testing.
+
+Final documentation checks: 86 local links/anchors and 13 Bash syntax blocks in
+the three changed active guides passed. The withdrawal fixture passed in
+24.735 s; no broad CPU/physics suite was run. All 41 tracked file paths remain;
+only ten existing source/test/document files changed. Approved camera/protocol
+JSON, environment/evaluator implementation, dataset I/O and other protected
+tracked files match HEAD; the 12 original pilot directories remain. No destructive
+cleanup was performed. Owner GUI acceptance and other-pose physical validation
+are still pending. Stage 2 remains unauthorized.

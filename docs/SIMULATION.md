@@ -248,12 +248,23 @@ overlap rejects a candidate rather than certifying a physical collision/contact.
 Cube/finger checks use triangle/box geometry. Authored adjacent mechanical joints
 and the fixed base/table mounting interface have explicit exceptions.
 
-Every accepted straight joint edge is sampled with a conservative displacement
-bound based on a 0.6 m downstream radius and the requested clearance margin.
+Every accepted straight joint edge is sampled using a conservative **per-joint
+motion radius** derived from the USD's fixed frame translations and full mesh
+extents. Triangle inequality bounds downstream reach at every joint angle;
+carrying a cube extends the holder's radii to include its measured payload.
+For an edge, `sum(radius_i × abs(delta_q_i))` bounds point travel. Paired motion
+adds both arms' bounds. Sample spacing is the requested clearance minus the
+existing 0.1 mm cache-state reserve. No margin is reduced to gain speed.
+
 Curved trajectories are checked on the **actual spline**, including bulges and
-joint extrema. Payload-aware checks transform the held cube using its measured
-TCP-relative pose; endpoint-only checks are insufficient. Tracking error and
-PhysX hull approximation remain reasons to validate actual motion independently.
+joint extrema. Each polynomial interval gets its own exact derivative bound,
+so a short steep interval does not impose dense sampling on the whole curve.
+For paired return/carry, the validator uses the exact commanded timing of both
+arms. A remembered separating axis is only a candidate: current full inflated
+vertices must prove separation again. Unresolved pairs still use the same LP.
+Endpoint-only checks and reuse of a previous collision boolean are insufficient.
+Tracking error and PhysX hull approximation remain reasons to validate actual
+motion independently.
 
 Blocked open-hand transits use the existing bounded, seeded **RRT-Connect**
 fallback over five arm joints. Its edges use the same intermediate checker;
@@ -284,11 +295,20 @@ The 20 Hz expert selects an **absolute 12-joint position target**, held for thre
 60 Hz physics ticks. Isaac's existing joint actuators execute it with measured
 gravity compensation. This is not torque-learning or a new dynamics controller.
 Both arms share the clock; planning can pause physical time while the viewer
-renders. Dense collision checks are intentionally costly; they were preserved
-in this consolidation.
+renders. Reducing planning wall time does not remove recorded frames, because
+physics and the recording clock do not advance during those pauses.
 
-For coordinated pickup and return/carry, both arms use the same joint-linear quintic progress
+For coordinated pickup, both arms use the same joint-linear quintic progress
 and a common duration bounded by the larger joint displacement across both arms.
+For return/carry, `CoordinatedJointPath` gives the receiver **one uninterrupted
+quintic transit to the bin**, while the donor follows checked joint-linear
+clearance legs. Donor legs have zero velocity/acceleration at their boundaries;
+there is no intermediate settling hold and the receiver does not stop there.
+An optional initial receiver lead clears the carried cube before donor return.
+The shared duration keeps each arm's nominal peak joint speed at most 0.35 rad/s.
+The final receiver insertion retains the existing spline speed of 0.12 rad/s.
+Timing limits describe target trajectories,
+not measured tracking or a guarantee of hardware safety.
 `coordinated_segment` samples the two moving robots and predicted held cube
 together, with a displacement bound summing both arms' travel. It checks the
 table, basket, self/inter-arm geometry and payload clearance. Before pickup the
@@ -303,33 +323,48 @@ It uses actual bilateral pad force and cube motion. The bounded gripper feedback
 adjusts jaw position to maintain preload, with the validated lift feedback enabled.
 A commanded closed jaw or geometric overlap cannot establish possession.
 
-During left opening and pregrasp, the right moves to a reachable joint-space
-portion of an existing handover IK solution. Its actual TCP must be nearer the
-transfer region and lower than HOME. This replaces the unreachable Cartesian
-offsets that stopped the preceding revision before either arm coordinated.
-The receiver waits there during donor grasp/lift/transport; all those collision
-checks include its actual pose.
-The final receiver plan starts from measured right joints, not HOME, and follows
-checked approach waypoints. This Stage 1 revision awaits the owner's GUI test;
-the earlier 12-attempt results apply to the preceding sequential version.
+During left opening and pregrasp, the right moves to a reachable **aligned
+pregrasp**, 20–40 mm back along the final receiver insertion axis. In the measured
+nominal plan its waiting TCP target is approximately `(0.0395,-0.2687,0.1861)` m: closer to
+the handover and lower than the previous `(0.0221,-0.0928,0.2299)` m waiting pose.
+All three early paired segments are validated with the unheld cube still static.
+The donor's transport IK prefers the same coupled handover branch, so the cube
+arrives in front of the waiting receiver rather than requiring it to go around.
+Lift and transport checks include that waiting arm.
+
+The final receiver plan starts from measured right joints. If already near the
+aligned entrance, it validates one direct Cartesian insertion spline and the
+closing segment, avoiding the old global RRT detour. If that route is unavailable,
+the existing checked transit and earlier staging remain fallbacks. Approval of
+the earlier sequential pilot does not approve these changed movements.
 The receiver then establishes light bilateral contact and acquires preload. The left opens from
 its measured loaded pose; a checked outward clearance can remove residual fixed
 finger contact. Right-only support must persist for three seconds before transfer
-is credited. Initial donor separation retains its contact-aware clearance path;
-the subsequent return HOME overlaps right travel to the basket. Every paired
-segment checks both moving arms and the right-held cube. The receiver then opens,
+is credited. After initial contact-aware finger separation, the planner first tries a direct
+paired donor-return/receiver-bin route. A checked Cartesian or global donor
+withdrawal remains the fallback. The receiver then moves continuously to the bin
+while the donor returns HOME. Every paired segment checks both moving arms and
+the right-held cube. The receiver then opens,
 retreats, and the cube must
 settle inside the interior on its floor. The small observed handover dip is
 measured in transfer diagnostics; it is not a commanded teleport or regrasp trick.
 
-Both raw `run_manipulation.py --stage full` and `so101.py expert` now default to
-continuous motion, 20 Hz targets and grip feedback from lift. The nominal visible
-non-recording verification completed all independent stages with zero forbidden
-contacts in 134.1167 s of task time. Actual velocity measurements showed both
-arms moving for 7.75 s during pregrasp and 14.18 s during donor return/bin carry.
-Cold CPU planning cost is separate from physical task duration. The new paired
-pickup plan is cached only with matching source/geometry, both arm paths and
-measured cube/start state; pose changes invalidate it.
+Both raw `run_manipulation.py --stage full` and `so101.py expert` default to
+continuous motion, 20 Hz targets and grip feedback from lift. The final nominal
+revision passed two visible, non-recording physics runs in **114.8833 s** each,
+including the 3 s reset (independent task evaluation: 111.8833 s). The preceding coordinated
+revision took 134.1167 s. Measured joint velocity above 0.02 rad/s confirmed both
+arms moving for 8.38 s during pregrasp and 7.97 s during return/carry. The latter
+is one 11.48 s moving phase, with no intermediate receiver settling hold.
+
+Cold stage planning took 64.81 s; the complete process took 232.24 s. These are
+separate from physical task duration. The cached default-command rerun took
+168.69 s wall / 0.78 s stage planning and independently passed again. A faster
+0.25 rad/s insertion was tested and rejected after premature cube contact; the final code retains 0.12 rad/s.
+A previous conservative return-timing candidate also passed physics but was
+slower overall and was replaced. See the [verification record](archive/VERIFICATION.md#aligned-handover-and-continuous-bin-carry--2026-10-24)
+for results and failed candidates. These tests establish nominal operation;
+other starting poses and the owner's visual acceptance remain pending.
 
 ### Reset and independent evaluation
 
@@ -346,6 +381,13 @@ stable grasp limits are 5 mm /10°. Placement requires interior cube geometry,
 floor support, low cube velocity, released pads and retreated arms.
 Failures, resets and timing are saved per attempt. See [pilot evidence](DATASET.md#measured-pilot-results)
 for what has actually passed, not just what these guards are intended to test.
+
+The optimization follows the separation between Cartesian path generation and
+collision validation described in the [official MoveIt Cartesian guidance](https://docs.picknik.ai/how_to/robotics_applications/cartesian_path_following/)
+and the need for meaningful motion-checking resolution in
+[OMPL's validity documentation](https://ompl.kavrakilab.org/stateValidation.html).
+These are references for the method; this project still uses its existing SciPy
+IK/planner, with no MoveIt, OMPL or cuRobo runtime dependency.
 
 Start studying at `SO101Model.ik`, `CollisionWorld.segment/curve/joint_transit`,
 `JointPath.position`, `Episode.run/handover/place`, `BenchmarkEnv.advance/step`

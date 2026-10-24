@@ -68,22 +68,33 @@ reviewing it. It runs once by default. An episode means one complete task attemp
 not a recorded demonstration. `python scripts/so101.py expert` is the equivalent
 high-level entry point; the direct command above uses the same coordinated recipe.
 
-The current revision starts right-arm prepositioning **while the left opens and
-approaches the cube**, using one shared motion clock. The right moves closer and
-lower, waits clear of the donor, then approaches from its measured pose. After
-transfer and initial finger clearance, the donor returns HOME while the receiver
-travels to the basket. **Your GUI approval is still required.** Historical pilot successes
-describe the earlier sequential controller; they do not validate this change.
+The right starts moving **while the left opens and approaches the cube**. It now
+waits lower, about 4 cm back along the final insertion direction. The donor brings
+the cube in front of that waiting gripper; the receiver uses a direct insertion
+instead of going around to a different handover pose. After verified transfer
+and finger separation, the receiver makes one continuous move to the basket
+while the donor returns HOME. The collision checker validates both moving arms
+and the carried cube together. Existing checked fallback routes remain available.
+**Your GUI approval of this revision is still required.** Historical pilot
+successes describe the earlier sequential controller.
 
-The revised nominal task passed **two non-recording visible Isaac runs**: all four
-physical stages succeeded with zero forbidden contacts in **134.12 simulated
-seconds**, compared with **153.18 s** for the sequential reference. At 20 Hz this
-means roughly **12.4% fewer observation/action samples** if later recorded.
-Cold collision planning adds wall time while physics is paused; it adds no
-demonstration frames. Geometry- and measured-state-bound caches reuse valid plans
-on subsequent runs. The second run took **249.54 s wall time**, including
-**50.50 s planning**; its new pickup cache is now populated too. No demonstrations
+The improved nominal task passed **two non-recording visible Isaac runs**: all four
+physical stages succeeded with zero forbidden contacts in **114.88 simulated
+seconds each**, including the 3 s reset. The previous coordinated version took
+**134.12 s** and the sequential reference **153.18 s**. That is **14.3% shorter
+than the previous version**. Excluding reset, the shorter motion would mean about
+14.7% fewer 20 Hz observation/action rows if later recorded. No demonstrations
 have been recorded for this revision.
+
+The cold run took **232.24 s wall time**, including **64.81 s of stage planning**.
+The aligned receiver insertion needed **6.61 s planning**; the new return/carry
+needed **28.43 s**. First-run calculation is still noticeable. Planning pauses
+physics, so those pauses add no dataset frames. Cached plans are reused only
+when source, geometry and measured joint/cube inputs match.
+The verified cached run took **168.69 s wall time**, with only **0.78 s
+of stage planning**. Changing source, cube pose or measured grasp can require
+fresh computation.
+[Timing evidence and limits](docs/archive/VERIFICATION.md#aligned-handover-and-continuous-bin-carry--2026-10-24).
 
 **What calculates the movement?** Our code uses SciPy bounded inverse kinematics
 (IK) to find five arm-joint angles for a requested fingertip pose. It checks the
@@ -197,7 +208,7 @@ not override it.
 | Established by evidence | Still unverified / not approved |
 | --- | --- |
 | Sequential reference pickup, lift, handover, placement and automatic reset | Coordinated Stage 1 controller GUI approval; broad-distribution reliability and hardware transfer |
-| Coordinated nominal controller: 2/2 visible physics successes, zero forbidden contacts | Owner GUI approval and other starting-pose validation |
+| Improved coordinated nominal controller: 2/2 final-revision physics successes, zero forbidden contacts | Owner GUI approval and other starting-pose validation |
 | Approved frozen overhead + two wrist cameras; owner accepted scene/HTML workflow and guide fix | Physical camera-mount registration and hardware calibration |
 | 12/12 physical pilot successes, 12/12 automated QA passes, 3/3 selected physical replays | Human acceptance of all 12 demonstrations; the other nine physical replays |
 | Official ACT/Diffusion command/config preflight and guarded inference interface | Accepted training corpus, optimizer updates, trained inference and learned task success |

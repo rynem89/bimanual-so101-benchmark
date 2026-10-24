@@ -8,6 +8,26 @@ from so101_model import SO101Model,calibrate,box_mesh,mesh_box_overlap,triangle_
 
 
 class GeometryTests(unittest.TestCase):
+    def test_authored_motion_bound_covers_meshes_and_payload(self):
+        from so101_model import apply
+        model=SO101Model();calibrate(model)
+        payload=apply(model.tcp@transform((.03,-.02,-.03)),box_mesh(np.zeros(3),(.04,.04,.04),'payload').vertices)
+        radii=model.motion_radii(payload)
+        rng=np.random.default_rng(24601)
+        for _ in range(12):
+            origin=rng.uniform(model.limits[:,0],model.limits[:,1])
+            for joint in range(7):
+                delta=rng.uniform(-.2,.2,6)
+                if joint<6:delta[np.arange(6)!=joint]=0.
+                goal=np.clip(origin+delta,model.limits[:,0],model.limits[:,1])
+                bound=float(radii@np.abs(goal-origin))
+                before=model.world_meshes(origin);after=model.world_meshes(goal)
+                displacement=max(np.linalg.norm(b[1]-a[1],axis=1).max() for a,b in zip(before,after))
+                p0=apply(model.fk(origin)['gripper'],payload)
+                p1=apply(model.fk(goal)['gripper'],payload)
+                displacement=max(displacement,np.linalg.norm(p1-p0,axis=1).max())
+                self.assertLessEqual(displacement,bound+1e-10)
+
     def test_bounded_rrt_checks_edges_and_reports_no_path(self):
         from types import SimpleNamespace
         from so101_planning import CollisionWorld
@@ -130,8 +150,12 @@ class ModelTests(unittest.TestCase):
         result=plan_placement(self.model,left.astype(np.float32),right.astype(np.float32),local,continuous=True)
         self.assertIsNotNone(result['selected'])
         selected=result['selected'];departure=selected['left_departure']
-        self.assertEqual(departure['kind'],'joint_transit')
-        self.assertTrue(departure['transit']['safe'])
+        # A jointly departing receiver can now clear the formerly blocked
+        # donor sweep directly; retain the global fallback if that is unsafe.
+        self.assertIn(departure['kind'],('coordinated_direct','joint_transit'))
+        if departure['kind']=='joint_transit':self.assertTrue(departure['transit']['safe'])
+        self.assertTrue(all(check['safe'] for check in departure['checks']))
+        self.assertTrue(all(check['safe'] for check in selected['coordinated_return']['checks']))
         np.testing.assert_allclose(departure['waypoints'][-1],np.r_[np.zeros(5),np.pi/4])
         self.assertTrue(selected['carry_check']['safe'])
         self.assertTrue(selected['opening_check']['safe'])
@@ -168,8 +192,10 @@ class ModelTests(unittest.TestCase):
             plan=planning.plan_pickup(self.model)
         self.assertTrue(plan['waypoints'])
         samples=sum(check['samples'] for check in plan['segment_checks'])
-        self.assertGreaterEqual(samples,3794)
-        self.assertGreater(count,1900)
+        # Sampling density is now derived from authored joint radii instead of
+        # a uniform 0.6 m bound. Its geometric coverage is tested independently.
+        self.assertGreater(samples,2*len(plan['segment_checks']))
+        self.assertGreater(count,0)
         print(f'Collision equivalence: {count} LP queries, {samples} path samples',flush=True)
 
     def test_cache_invalidates_geometry_calibration_settings_and_changed_state(self):

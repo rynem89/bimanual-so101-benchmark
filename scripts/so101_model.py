@@ -55,6 +55,7 @@ class Mesh:
     vertices: np.ndarray
     planes: np.ndarray
     inflated_vertices: dict = field(default_factory=dict,repr=False)
+    separating_axes: dict = field(default_factory=dict,repr=False)
 
 
 class SO101Model:
@@ -171,6 +172,34 @@ class SO101Model:
         poses = self.fk(q, base)
         return [(m, apply(poses[m.link], m.vertices), poses[m.link]) for m in self.meshes]
 
+    def motion_radii(self, extra_vertices=None, link='gripper'):
+        """Conservative metres/radian bounds from authored frames and geometry.
+
+        Walk from each rigid link back through its ancestor joints. Triangle
+        inequality on the fixed translations bounds every downstream point at
+        EVERY joint angle; this is not a sampled-pose estimate. An optional
+        payload is supplied in its owning rigid link's coordinates.
+        """
+        extents={}
+        for mesh in self.meshes:
+            extents[mesh.link]=max(extents.get(mesh.link,0.),float(np.linalg.norm(mesh.vertices,axis=1).max()))
+        if extra_vertices is not None:
+            points=np.asarray(extra_vertices,dtype=float)
+            if points.ndim!=2 or points.shape[1]!=3 or not len(points) or not np.isfinite(points).all():
+                raise ValueError('Finite payload vertices in rigid-link coordinates required')
+            if link not in LINK_NAMES:raise ValueError('Unknown payload link')
+            extents[link]=max(extents.get(link,0.),float(np.linalg.norm(points,axis=1).max()))
+        parents={joint.child:(i,joint) for i,joint in enumerate(self.joints)}
+        radii=np.zeros(len(self.joints))
+        for child,reach in extents.items():
+            while child in parents:
+                index,joint=parents[child]
+                reach+=np.linalg.norm(joint.child_inverse[:3,3])
+                radii[index]=max(radii[index],reach)
+                reach+=np.linalg.norm(joint.parent_frame[:3,3])
+                child=joint.parent
+        return radii
+
 
 def intersect_hulls(a, ta, b, tb, margin=0.001):
     """Conservative convex-envelope overlap via half-space feasibility.
@@ -192,12 +221,23 @@ def intersect_hulls(a, ta, b, tb, margin=0.001):
                 mesh.inflated_vertices[margin]=None
         inflated.append(mesh.inflated_vertices[margin])
     if all(v is not None for v in inflated):
+        key=(b.path,margin)
+        cached=a.separating_axes.get(key)
+        if cached is not None:
+            axis=ta[:3,:3]@cached
+            pa=inflated[0]@(ta[:3,:3].T@axis)+ta[:3,3]@axis
+            pb=inflated[1]@(tb[:3,:3].T@axis)+tb[:3,3]@axis
+            # This is a new proof against CURRENT full inflated vertices,
+            # never reuse the previous pose's collision/no-collision result.
+            if pa.max()<pb.min()-1e-7 or pb.max()<pa.min()-1e-7:return False
         centre=ta[:3,3]-tb[:3,3]
         if np.linalg.norm(centre)>1e-12:
             axis=centre/np.linalg.norm(centre)
             pa=inflated[0]@(ta[:3,:3].T@axis)+ta[:3,3]@axis
             pb=inflated[1]@(tb[:3,:3].T@axis)+tb[:3,3]@axis
-            if pa.max()<pb.min()-1e-7 or pb.max()<pa.min()-1e-7:return False
+            if pa.max()<pb.min()-1e-7 or pb.max()<pa.min()-1e-7:
+                a.separating_axes[key]=ta[:3,:3].T@axis
+                return False
         # Curved CAD hulls have thousands of facets. Testing every face axis
         # creates huge matrices; a small deterministic subset proves many
         # separations cheaply. Missing an axis only falls back to the LP.
@@ -205,7 +245,10 @@ def intersect_hulls(a, ta, b, tb, margin=0.001):
                         b.planes[::max(1,len(b.planes)//12),:3]@tb[:3,:3].T])
         pa=inflated[0]@(ta[:3,:3].T@axes.T)+ta[:3,3]@axes.T
         pb=inflated[1]@(tb[:3,:3].T@axes.T)+tb[:3,3]@axes.T
-        if np.any(pa.max(0)<pb.min(0)-1e-7) or np.any(pb.max(0)<pa.min(0)-1e-7):return False
+        separated=(pa.max(0)<pb.min(0)-1e-7)|(pb.max(0)<pa.min(0)-1e-7)
+        if separated.any():
+            a.separating_axes[key]=ta[:3,:3].T@axes[np.flatnonzero(separated)[0]]
+            return False
     return _lp_intersection(a,ta,b,tb,margin)
 
 

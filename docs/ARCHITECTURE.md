@@ -37,9 +37,9 @@ commands to run. All public data uses metres/radians/seconds unless stated.
 | --- | --- | --- |
 | [scripts/so101.py](../scripts/so101.py) — interface | Parsed user intent → pinned commands; raw metadata/arrays → inventory and seekable HTML | `python scripts/so101.py --help`; stdlib-only help/preview |
 | [scripts/inspect_task_layout.py](../scripts/inspect_task_layout.py) — essential runtime + legacy diagnostic | AppLauncher/assets → shared two-arm table/cube/basket scene; name→joint/body IDs | Imported after launch flags are prepared; direct execution runs old FK motions, not the stationary viewer |
-| [scripts/so101_model.py](../scripts/so101_model.py) — essential runtime | Existing USD → joint limits, link/triangle model, FK/IK/TCP and geometric overlap checks | Imported by planner/environment; CPU tests need bundled USD libraries |
+| [scripts/so101_model.py](../scripts/so101_model.py) — essential runtime | Existing USD → joint limits, link/triangle model, FK/IK/TCP, authored motion radii and geometric overlap checks | Imported by planner/environment; CPU tests need bundled USD libraries |
 | [scripts/so101_planning.py](../scripts/so101_planning.py) — essential runtime | Model, measured joints/payload and target → checked waypoints/diagnostics/cache fingerprints | Expert planning; `--profile` is an offline diagnostic |
-| [scripts/benchmark_core.py](../scripts/benchmark_core.py) — essential runtime | Measured `Frame` → independent task result; joint waypoints → spline/timing bounds | Shared evaluator and trajectory mathematics, no Kit |
+| [scripts/benchmark_core.py](../scripts/benchmark_core.py) — essential runtime | Measured `Frame` → independent task result; joint waypoints → spline/coordinated timing and interval validation bounds | Shared evaluator and trajectory mathematics, no Kit |
 | [scripts/benchmark_env.py](../scripts/benchmark_env.py) — essential runtime | Absolute position target → physics, contact/state observation and evaluation | Shared reset/20 Hz policy interface; imports after AppLauncher |
 | [scripts/run_manipulation.py](../scripts/run_manipulation.py) — essential runtime | Scenarios/plans or policy/replay targets → complete physical attempts and JSON results | `so101.py expert`, `replay`, `evaluate run`; low-level old diagnostics remain for provenance |
 | [scripts/policy_cameras.py](../scripts/policy_cameras.py) — essential runtime + maintained diagnostic | Frozen calibration → actual sensor tensors/attachment proofs; saved diagnostics → review figures | `so101.py scene`; imported by environment/QA; historical overview comparison retained |
@@ -58,17 +58,20 @@ modules were not renamed or rewritten for this cleanup.
 | --- | --- |
 | `SO101Model(asset)`, `.fk(q,base)`, `.tcp_pose(q,base)` | Authored USD and one arm's six radian angles → link transforms /4×4 TCP; explicit base transform |
 | `SO101Model.ik(target_m, approach, opening_deg, reference, base, rotation)` | Reachable position/orientation request → distinct converged five-arm-joint solutions and errors; not a safe path |
+| `SO101Model.motion_radii(extra_vertices,link)` | USD frame translations and mesh/payload extents → conservative per-joint metres/radian motion bounds at every joint angle |
 | `calibrate(model)` | Authored finger triangles → TCP/aperture estimates, mutates `model.tcp`; not physical contact proof |
 | `CollisionWorld.check/segment/curve/joint_transit` | Measured configuration, obstacles/payload and margin → faults or checked path; rejects unresolved geometry |
-| `coordinated_segment/plan_receiver_preposition` | Both joint paths and static cube or measured payload transform → checked pickup/receiver preparation and donor-return/bin-carry segments; checks both moving arms together |
+| `coordinated_segment/plan_receiver_preposition` | Both joint paths and static cube or measured payload transform → aligned receiver preparation and checked return/carry; validates both arms at the exact shared trajectory timing |
 | `plan_pickup/lift/transport/receiver/donor_clearance/placement` | Model and current task state → stage plans; payload/opposite-arm checks as applicable |
 | `JointPath(waypoints).position(u)/limits()` | Joint knots + normalized time → quintic-scaled spline targets /nominal derivative bounds |
+| `CoordinatedJointPath(left_waypoints,right_start,right_goal,speed,lead)` | Donor clearance knots + receiver goal → one shared clock with uninterrupted receiver travel, exact paired targets and nominal limits |
+| `validation_grid(paths,radii,spacing)` | Exact polynomial derivative bounds → interval-specific collision samples; paired quintics provide their own matching grid |
 | `BenchmarkEnv.reset(cube_xy,cube_yaw_deg,seed)` | Initial condition → settled checked state; sole benchmark physical state-write entry point |
 | `BenchmarkEnv.advance(action,evaluate)` | `[2,6]` absolute radian targets → one 60 Hz measured `Frame` |
 | `BenchmarkEnv.step(action)` | Same target → up to three ticks, nonprivileged observation, terminal flag and independent report |
 | `BenchmarkEnv.capture_images/camera_metadata` | Current measured state → three RGB tensors /verified rendered camera/parent poses; no task step |
 | `TaskEvaluator.reset/update/report` | Reset check and measured physics frames → stage flags, collision/slip/limit/failure metrics; never expert success labels |
-| `Episode.run/move/move_coordinated/follow/handover/place` | Checked plans + contact feedback → actuator-controlled task; paired pickup and return/carry use one clock; final receiver approach starts from measured waiting joints |
+| `Episode.run/move/move_coordinated/follow/handover/place` | Checked plans + contact feedback → actuator-controlled task; paired pickup and return/carry use one clock; aligned receiver inserts from measured waiting joints, then travels continuously to the bin |
 | `EpisodeWriter.begin/applied/finish` | Pre-action inputs + actual per-tick targets → complete paired raw rows, terminal diagnostics and outcome |
 | `make_plan/load_manifest/require_approval/collect` | Fixed protocol + genuine approval → reproducible manifests /counted launch ledger, never a success quota |
 | `audit_episode/validate/episode_digest` | Raw bytes + declared case + quality/human records → exhaustive QA and hash-bound acceptance |
