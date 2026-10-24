@@ -66,10 +66,17 @@ The expert executes pickup → lift → handover → basket placement → retrea
 GUI is the default; the final state stays open for inspection. Close Isaac after
 reviewing it. `--episodes 3` repeats the task with automatic reset between attempts.
 
+The current Stage 1 revision starts right-arm prepositioning **during the left
+lift**, using one shared motion clock. The right waits clear of the transfer
+region, then approaches from its measured pose for handover and placement.
+**This revision awaits your Isaac GUI approval.** Historical pilot successes
+describe the earlier sequential controller; they do not validate this change.
+
 **What calculates the movement?** Our code uses SciPy bounded inverse kinematics
 (IK) to find five arm-joint angles for a requested fingertip pose. It checks the
-whole path against both robots, table, cube and basket. A cubic joint spline with
-quintic time scaling generates smooth position targets. Those targets are held
+whole path against both robots, table, cube and basket. Joint transits use quintic
+timing; Cartesian waypoint approaches use a cubic spline with quintic timing.
+Those position targets are held
 at 20 Hz while Isaac executes 60 Hz physics. Contact feedback controls gripping;
 the cube is moved by simulated contact, not teleported.
 [Equations and source references](docs/SIMULATION.md#expert-ik-and-motion).
@@ -176,7 +183,7 @@ not override it.
 
 | Established by evidence | Still unverified / not approved |
 | --- | --- |
-| Deterministic pickup, lift, mid-air handover, placement and automatic reset | Broad-distribution reliability and real-hardware transfer |
+| Sequential reference pickup, lift, handover, placement and automatic reset | Coordinated Stage 1 controller GUI approval; broad-distribution reliability and hardware transfer |
 | Approved frozen overhead + two wrist cameras; owner accepted scene/HTML workflow and guide fix | Physical camera-mount registration and hardware calibration |
 | 12/12 physical pilot successes, 12/12 automated QA passes, 3/3 selected physical replays | Human acceptance of all 12 demonstrations; the other nine physical replays |
 | Official ACT/Diffusion command/config preflight and guarded inference interface | Accepted training corpus, optimizer updates, trained inference and learned task success |
@@ -185,8 +192,11 @@ The provisional design proposes 100 train /20 validation attempts and 100
 held-out evaluation cases. **Collection, augmentation and all policy training
 remain unauthorized.** Repository consolidation and the exact eight-file/four-branch
 cleanup received separate owner approval; it does not authorize learning work.
-Approved camera/protocol JSON bytes, controller, evaluator and action semantics
-remain fixed. [Measured pilot details](docs/DATASET.md#measured-pilot-results).
+Camera/protocol JSON bytes, scene, physics, IK solver, evaluator and action
+semantics remain fixed. Stage 1 authorizes the coordinated controller and your
+manual GUI inspection only. Ten new demonstrations and their HTML reviews wait
+for your explicit Stage 2 approval; no collection, QA, replay or test suites are
+being run for Stage 1. [Earlier pilot details](docs/DATASET.md#measured-pilot-results).
 
 ## Code, detailed guides and historical records
 

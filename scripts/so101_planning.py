@@ -8,6 +8,7 @@ empty grasp region. Runtime contacts remain an independent necessary check.
 from __future__ import annotations
 
 import numpy as np
+import copy
 import hashlib
 import inspect
 from pathlib import Path
@@ -291,6 +292,91 @@ def plan_lift(model, grasp_q, held=False, cube=(-.34,-.04,.02), cube_rotation=No
     return {'safe':False,'failure':'no_lift_candidate','rejections':rejections}
 
 
+def coordinated_segment(model, left_start, left_goal, right_start, right_goal, cube_in_left_tcp, margin=.002):
+    """Check simultaneous joint-linear motion and the measured left payload.
+
+    Both arms use the same quintic progress during execution. The sampling bound
+    sums BOTH arms' travel, so it covers relative inter-arm/payload movement,
+    rather than checking each arm against the other's initial pose. This lift
+    starts with the cube on the table; retain the existing 0.2 mm seating allowance.
+    No physical attachment is created, and measured contacts remain authoritative.
+    """
+    starts=np.asarray([left_start,right_start],dtype=float)
+    goals=np.asarray([left_goal,right_goal],dtype=float)
+    if starts.shape!=(2,6) or goals.shape!=(2,6) or not np.isfinite([starts,goals]).all():
+        raise ValueError('Finite (2,6) coordinated endpoints required')
+    cube_in_left_tcp=np.asarray(cube_in_left_tcp,dtype=float)
+    if cube_in_left_tcp.shape!=(4,4) or not np.isfinite(cube_in_left_tcp).all():
+        raise ValueError('Finite 4x4 measured payload transform required')
+    spacing=margin-CACHE_MOTION_RESERVE_M
+    if spacing<=0:raise ValueError('Margin must exceed motion reserve')
+    right=copy.copy(model);right.base=model.base.copy();right.base[0,3]=.25
+    left_world=CollisionWorld(model,other_q=starts[1],other_base=right.base)
+    right_world=CollisionWorld(right,other_q=starts[0],other_base=model.base)
+    payload=box_mesh(np.zeros(3),np.full(3,.04),'payload')
+    delta=goals-starts
+    count=max(2,int(np.ceil(.6*np.abs(delta).sum()/spacing))+1)
+    # Reject unsafe endpoints before spending time on the interior samples.
+    for index in (0,count-1,*range(1,count-1)):
+        q=starts+delta*(index/(count-1))
+        pose=model.tcp_pose(q[0])@cube_in_left_tcp
+        vertices=apply(pose,payload.vertices)
+        left_meshes=model.world_meshes(q[0]);right_meshes=right.world_meshes(q[1])
+        faults=[]
+        for side,world,other in ((0,left_world,right_meshes),(1,right_world,left_meshes)):
+            world.right=other
+            world.right_bounds=np.array([(v.min(0),v.max(0)) for _,v,_ in other])
+            world.cube=pose[:3,3];world.cube_rotation=pose[:3,:3];world.cube_vertices=vertices
+            faults.extend(('left:' if side==0 else 'right:')+fault
+                          for fault in world.check(q[side],margin,cube_contact=side==0))
+        if vertices[:,2].min()<-.0002:faults.append('payload/table')
+        obstacles=[entry for entry in left_meshes if entry[0].link not in ('gripper','jaw')]
+        obstacles+=right_meshes+[(m,m.vertices,np.eye(4)) for m in left_world.bin]
+        for mesh,verts,mt in obstacles:
+            if (np.all(vertices.min(0)<=verts.max(0)+.003)
+                    and np.all(verts.min(0)<=vertices.max(0)+.003)
+                    and intersect_hulls(payload,pose,mesh,mt,.003)):
+                faults.append('payload/'+mesh.link)
+        if faults:
+            return dict(safe=False,samples=count,failed_sample=index,progress=index/(count-1),faults=sorted(set(faults)))
+    return dict(safe=True,samples=count,margin_m=margin,cache_motion_reserve_m=CACHE_MOTION_RESERVE_M)
+
+
+def plan_coordinated_lift(model, left_start, left_goal, right_start, cube_in_left_tcp):
+    """Reach a receiver-side waiting pose while the donor lifts, without contact.
+
+    Reuse the existing coupled handover IK, then back the receiver away along
+    its insertion axis by 120--200 mm. This avoids prescribing an independently
+    infeasible six-dimensional waiting pose to the five-joint SO-101 arm.
+    Every candidate must pass the coupled path check; there is no unchecked or
+    silently serial fallback when simultaneous motion cannot be planned.
+    """
+    right=copy.copy(model);right.base=model.base.copy();right.base[0,3]=.25
+    result=dict(selected=None,left_start=left_start,left_goal=left_goal,right_start=right_start,
+                cube_in_left_tcp=cube_in_left_tcp,rejections=[])
+    references=handover_candidates(model,[0,-.27,.18],seeds=12,alternate=True,cube_in_left_tcp=cube_in_left_tcp)
+    result['handover_ik_candidates']=len(references)
+    references.sort(key=lambda item:np.linalg.norm(item['right_q']-right_start))
+    for reference in references[:3]:
+        pose=right.tcp_pose(reference['right_q'])
+        for clearance in (.12,.16,.20):
+            target=pose[:3,3]+clearance*pose[:3,2]
+            candidates=right.ik(target,approach=-pose[:3,2],opening_deg=45,
+                                reference=reference['right_q'],seeds=2)
+            if not candidates:
+                result['rejections'].append(dict(target_world_m=target,faults=['waiting_pose_ik']))
+            candidates.sort(key=lambda item:np.linalg.norm(item['q']-right_start))
+            for candidate in candidates[:2]:
+                if candidate['limit_margin_deg']<3:continue
+                check=coordinated_segment(model,left_start,left_goal,right_start,candidate['q'],cube_in_left_tcp)
+                if check['safe']:
+                    result['selected']=dict(right_goal=candidate['q'],standby_tcp_world_m=target,
+                                            handover_clearance_m=clearance,ik=candidate,check=check)
+                    return result
+                result['rejections'].append(dict(target_world_m=target,check=check))
+    return result
+
+
 def handover_candidates(model, target, seeds=12, alternate=False, cube_in_left_tcp=None):
     """Coupled 10-joint solve for opposing approaches on orthogonal cube faces.
 
@@ -369,10 +455,12 @@ def transport_fingerprint(model):
     return h.hexdigest()
 
 
-def plan_transport(model, start_q, cube_in_tcp):
+def plan_transport(model, start_q, cube_in_tcp, other_q=None):
     candidates=handover_candidates(model,[0,-.27,.18],seeds=12,alternate=True,cube_in_left_tcp=cube_in_tcp)
     candidates.sort(key=lambda a:np.linalg.norm(a['left_q']-start_q))
-    report={'cube_in_left_tcp':cube_in_tcp,'start_q':start_q,'candidates':candidates,'selected':None,
+    report={'cube_in_left_tcp':cube_in_tcp,'start_q':start_q,
+            'right_start':np.zeros(6) if other_q is None else np.asarray(other_q),
+            'candidates':candidates,'selected':None,
             'fingerprint':transport_fingerprint(model)}
     right_base=model.base.copy();right_base[0,3]=.25
     attempts=0
@@ -386,22 +474,23 @@ def plan_transport(model, start_q, cube_in_tcp):
         if not pres:continue
         attempts+=1
         end=np.array(candidate['left_q']);end[-1]=start_q[-1]
-        candidate['transport_check']=carried_segment(model,start_q,end,cube_in_tcp)
+        candidate['transport_check']=carried_segment(model,start_q,end,cube_in_tcp,other_q=other_q)
         if candidate['transport_check']['safe']:
             candidate['left_q']=end;report['selected']=candidate;break
         if attempts>=4:break
     return report
 
 
-def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False):
-    """Checked Cartesian insertion plus a bounded global transit when needed."""
+def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False, start_q=None):
+    """Checked insertion from the receiver's measured pose, not assumed HOME."""
     import copy
     right=copy.copy(model);right.base=model.base.copy();right.base[0,3]=.25
     swap=np.array([[0,1,0],[1,0,0],[0,0,-1.]])
     rotation=cube_pose[:3,:3]@swap
     goals=right.ik(cube_pose[:3,3],rotation=rotation,reference=reference_q,seeds=6)
     world=CollisionWorld(right,cube_pose[:3,3],other_q=left_q,other_base=model.base,cube_rotation=cube_pose[:3,:3])
-    result={'left_q':left_q,'cube_pose':cube_pose,'selected':None,'rejections':[]};rrt_attempted=False
+    start=np.zeros(6) if start_q is None else np.asarray(start_q,dtype=float).copy()
+    result={'left_q':left_q,'right_start':start,'cube_pose':cube_pose,'selected':None,'rejections':[]};rrt_attempted=False
     for goal in goals:
         faults=world.check(goal['q'],margin=.001)
         if faults:result['rejections'].append({'goal':faults});continue
@@ -409,7 +498,7 @@ def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False):
             pres=right.ik(cube_pose[:3,3]+rotation[:,2]*distance,rotation=rotation,reference=goal['q'],seeds=3)
             for pre in pres:
                 if pre['limit_margin_deg']<3:continue
-                opened=np.zeros(6);opened[-1]=np.pi/4
+                opened=start.copy();opened[-1]=np.pi/4
                 approach=[pre['q']]
                 for offset in np.linspace(distance,0,17)[1:]:
                     solutions=right.ik(cube_pose[:3,3]+rotation[:,2]*offset,rotation=rotation,
@@ -423,7 +512,7 @@ def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False):
                 curve_check=world.curve(approach) if continuous else None
                 if continuous and not curve_check['safe']:
                     result['rejections'].append({'curve':curve_check});continue
-                first=world.segment(np.zeros(6),opened,margin=.001)
+                first=world.segment(start,opened,margin=.001)
                 if not first['safe']:result['rejections'].append(first);continue
                 transit=world.segment(opened,pre['q'],margin=.001);route=[opened,pre['q']]
                 if not transit['safe']:
@@ -436,7 +525,7 @@ def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False):
                 closure=approach[-1].copy();closure[-1]=np.deg2rad(15)
                 check=world.segment(approach[-1],closure,margin=.001,cube_contact=True)
                 if not check['safe']:result['rejections'].append(check);continue
-                result['selected']={'waypoints':[np.zeros(6),*route,*approach[1:]],
+                result['selected']={'waypoints':[start,*route,*approach[1:]],
                     'approach_start_index':len(route),'transit_routed':len(route)>2,
                     'checks':[first,transit,*insertion,check],'grasp_ik':goal,'pre_ik':pre,'curve_check':curve_check}
                 return result

@@ -60,6 +60,7 @@ modules were not renamed or rewritten for this cleanup.
 | `SO101Model.ik(target_m, approach, opening_deg, reference, base, rotation)` | Reachable position/orientation request → distinct converged five-arm-joint solutions and errors; not a safe path |
 | `calibrate(model)` | Authored finger triangles → TCP/aperture estimates, mutates `model.tcp`; not physical contact proof |
 | `CollisionWorld.check/segment/curve/joint_transit` | Measured configuration, obstacles/payload and margin → faults or checked path; rejects unresolved geometry |
+| `coordinated_segment/plan_coordinated_lift` | Both measured starts, donor lift goal and measured payload transform → simultaneous lift/receiver waiting plan; checks both moving arms together, not physical success |
 | `plan_pickup/lift/transport/receiver/donor_clearance/placement` | Model and current task state → stage plans; payload/opposite-arm checks as applicable |
 | `JointPath(waypoints).position(u)/limits()` | Joint knots + normalized time → quintic-scaled spline targets /nominal derivative bounds |
 | `BenchmarkEnv.reset(cube_xy,cube_yaw_deg,seed)` | Initial condition → settled checked state; sole benchmark physical state-write entry point |
@@ -67,7 +68,7 @@ modules were not renamed or rewritten for this cleanup.
 | `BenchmarkEnv.step(action)` | Same target → up to three ticks, nonprivileged observation, terminal flag and independent report |
 | `BenchmarkEnv.capture_images/camera_metadata` | Current measured state → three RGB tensors /verified rendered camera/parent poses; no task step |
 | `TaskEvaluator.reset/update/report` | Reset check and measured physics frames → stage flags, collision/slip/limit/failure metrics; never expert success labels |
-| `Episode.run/move/follow/handover/place` | Checked plans + contact feedback → actuator-controlled full task; state-machine guards supplement independent evaluation |
+| `Episode.run/move/move_coordinated/follow/handover/place` | Checked plans + contact feedback → actuator-controlled task; coordinated lift submits both arms on one clock, final receiver approach starts from measured waiting joints |
 | `EpisodeWriter.begin/applied/finish` | Pre-action inputs + actual per-tick targets → complete paired raw rows, terminal diagnostics and outcome |
 | `make_plan/load_manifest/require_approval/collect` | Fixed protocol + genuine approval → reproducible manifests /counted launch ledger, never a success quota |
 | `audit_episode/validate/episode_digest` | Raw bytes + declared case + quality/human records → exhaustive QA and hash-bound acceptance |

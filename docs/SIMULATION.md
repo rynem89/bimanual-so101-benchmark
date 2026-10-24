@@ -287,6 +287,14 @@ Both arms share the clock; planning can pause physical time while the viewer
 renders. Dense collision checks are intentionally costly; they were preserved
 in this consolidation.
 
+For the coordinated lift, both arms use the same joint-linear quintic progress
+and a common duration bounded by the larger joint displacement across both arms.
+`coordinated_segment` samples the two moving robots and predicted held cube
+together, with a displacement bound summing both arms' travel. It checks the
+table, basket, self/inter-arm geometry and payload clearance; only the donor's
+finger/cube contact and existing initial table seating allowance are permitted.
+These are nominal geometric checks, not proof of physical success.
+
 ### Gripping, handover and placement
 
 The state machine opens, reaches pregrasp, descends, closes, lifts and holds.
@@ -294,8 +302,13 @@ It uses actual bilateral pad force and cube motion. The bounded gripper feedback
 adjusts jaw position to maintain preload, with the validated lift feedback enabled.
 A commanded closed jaw or geometric overlap cannot establish possession.
 
-The left transports the held cube; the right follows checked approach waypoints,
-establishes light bilateral contact, then acquires preload. The left opens from
+During the left lift, the right simultaneously moves to a checked waiting pose
+120–200 mm back along an existing handover IK approach axis. It waits there during
+left transport; transport collision checks include this actual receiver pose.
+The final receiver plan starts from measured right joints, not HOME, and follows
+checked approach waypoints. This Stage 1 revision awaits the owner's GUI test;
+the earlier physical reference results apply to the preceding sequential version.
+The receiver then establishes light bilateral contact and acquires preload. The left opens from
 its measured loaded pose; a checked outward clearance can remove residual fixed
 finger contact. Right-only support must persist for three seconds before transfer
 is credited. Donor withdrawal is checked against the receiver and held cube.
