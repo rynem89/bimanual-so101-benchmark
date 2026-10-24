@@ -434,6 +434,9 @@ class Episode:
         self.result=result
         if self.camera_audit:self.camera_audit.capture(self.env,'initial',force=True)
         if options.record_dir and options.stage!='model':
+            # Headless reset advances physics without rendering. Refresh wrist
+            # transforms/buffers before validating the initial camera metadata.
+            self.env.capture_images()
             from dataset_io import EpisodeWriter
             from policy_cameras import CALIBRATION_SHA256, CALIBRATION_PATH
             cases_metadata=json.loads(options.cases_file.read_text()) if options.cases_file else {}
