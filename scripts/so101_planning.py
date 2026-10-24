@@ -522,7 +522,7 @@ def transport_fingerprint(model):
     return h.hexdigest()
 
 
-def plan_transport(model, start_q, cube_in_tcp, other_q=None, handover_reference=None):
+def plan_transport(model, start_q, cube_in_tcp, other_q=None, handover_reference=None, continuous=True):
     candidates=handover_candidates(model,[0,-.27,.18],seeds=12,alternate=True,
                                    cube_in_left_tcp=cube_in_tcp,reference=handover_reference)
     candidates.sort(key=lambda a:np.linalg.norm(a['left_q']-start_q) if handover_reference is None else
@@ -530,7 +530,7 @@ def plan_transport(model, start_q, cube_in_tcp, other_q=None, handover_reference
     report={'cube_in_left_tcp':cube_in_tcp,'start_q':start_q,
             'right_start':np.zeros(6) if other_q is None else np.asarray(other_q),
             'handover_reference':np.empty(0) if handover_reference is None else handover_reference,
-            'candidates':candidates,'selected':None,
+            'candidates':candidates,'selected':None,'receiver_continuous':continuous,
             'fingerprint':transport_fingerprint(model)}
     right_base=model.base.copy();right_base[0,3]=.25
     attempts=0
@@ -559,13 +559,27 @@ def plan_transport(model, start_q, cube_in_tcp, other_q=None, handover_reference
         end=np.array(candidate['left_q']);end[-1]=start_q[-1]
         candidate['transport_check']=carried_segment(model,start_q,end,cube_in_tcp,other_q=other_q)
         if candidate['transport_check']['safe']:
-            candidate['left_q']=end;report['selected']=candidate;break
+            # A reachable pregrasp alone does not establish an insertion path.
+            # Check the complete receiver route BEFORE delivering the payload;
+            # handover() still replans against the actual settled cube/arm poses.
+            receiver=plan_receiver(model,end,model.tcp_pose(end)@cube_in_tcp,right_q,
+                                   continuous=continuous,start_q=other_q)
+            candidate['predicted_receiver_plan']=receiver
+            if receiver['selected'] is not None:
+                candidate['left_q']=end;report['selected']=candidate;break
         if attempts>=4:break
     return report
 
 
 def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False, start_q=None):
-    """Checked insertion from the receiver's measured pose, not assumed HOME."""
+    """Buffered insertion, then a short fixed-pad centering move at acquisition.
+
+    The saved 20261024T222926 attempt 1 contacted at 34.3 mm TCP distance:
+    a 1 mm triangle margin was insufficient along the fixed finger. Keep the
+    existing 5 mm transit buffer through approach. When needed, offset away
+    from the fixed pad (negative TCP X), then center only at zero axial depth.
+    Runtime final-contact distance, alignment and force guards are unchanged.
+    """
     import copy
     right=copy.copy(model);right.base=model.base.copy();right.base[0,3]=.25
     swap=np.array([[0,1,0],[1,0,0],[0,0,-1.]])
@@ -575,69 +589,82 @@ def plan_receiver(model, left_q, cube_pose, reference_q, continuous=False, start
     transit_world=CollisionWorld(right,cube_pose[:3,3],other_q=left_q,other_base=model.base,
                                  cube_rotation=cube_pose[:3,:3],cube_clearance=.005)
     start=np.zeros(6) if start_q is None else np.asarray(start_q,dtype=float).copy()
-    result={'left_q':left_q,'right_start':start,'cube_pose':cube_pose,'selected':None,'rejections':[]};rrt_attempted=False
-    for goal in goals:
+    result={'left_q':left_q,'right_start':start,'cube_pose':cube_pose,'selected':None,
+            'goal_ik_candidates':len(goals),'rejections':[]};rrt_attempted=False
+    if not goals:result['rejections'].append(dict(stage='goal_ik',reason='no_ik_candidate'))
+    for goal_index,goal in enumerate(goals):
         faults=world.check(goal['q'],margin=.001)
-        if faults:result['rejections'].append({'goal':faults});continue
-        for distance in (.04,.045,.05,.055,.06,.02):
-            pres=right.ik(cube_pose[:3,3]+rotation[:,2]*distance,rotation=rotation,reference=goal['q'],seeds=3)
+        if faults:result['rejections'].append(dict(stage='goal',goal_index=goal_index,faults=faults));continue
+        # 35/30 mm bridge the old 40 -> 20 mm gap without relaxing the 3-degree
+        # pregrasp margin (saved attempt 5 had only 2.82 degrees at 40 mm).
+        for distance,lateral in ((d,x) for d in (.04,.035,.03,.045,.05,.055,.06,.02) for x in (0.,-.004,-.005)):
+            context=dict(goal_index=goal_index,distance_m=distance,lateral_m=lateral)
+            def reject(stage,**detail):
+                result['rejections'].append(dict(context,stage=stage,**detail))
+            pres=right.ik(cube_pose[:3,3]+rotation[:,2]*distance+rotation[:,0]*lateral,
+                          rotation=rotation,reference=goal['q'],seeds=3)
+            if not pres:reject('pregrasp_ik',reason='no_ik_candidate')
             for pre in pres:
-                if pre['limit_margin_deg']<3:continue
+                if pre['limit_margin_deg']<3:
+                    reject('pregrasp_limit',limit_margin_deg=pre['limit_margin_deg'],required_margin_deg=3.);continue
+                faults=transit_world.check(pre['q'],margin=.001)
+                if faults:reject('pregrasp_clearance',faults=faults);continue
                 opened=start.copy();opened[-1]=np.pi/4
                 approach=[pre['q']]
-                for offset in np.linspace(distance,0,17)[1:]:
-                    solutions=right.ik(cube_pose[:3,3]+rotation[:,2]*offset,rotation=rotation,
+                offsets=[(z,lateral) for z in np.linspace(distance,0,17)[1:]]
+                if lateral:
+                    cut=16
+                    offsets += [(0.,x) for x in np.linspace(lateral,0,5)[1:]]
+                else:
+                    cut=next(i for i,z in enumerate(np.linspace(distance,0,17)) if z<=.006)
+                for offset,side_offset in offsets:
+                    solutions=right.ik(cube_pose[:3,3]+rotation[:,2]*offset+rotation[:,0]*side_offset,rotation=rotation,
                                        reference=approach[-1],seeds=0)
                     if not solutions:break
                     approach.append(min(solutions,key=lambda r:np.linalg.norm(r['q']-approach[-1]))['q'])
-                if len(approach)!=17:
-                    result['rejections'].append({'cartesian_ik_failed':len(approach)});continue
-                def curve_checks(points):
-                    # Finish the last 6 mm separately, slowly and without an
-                    # unchecked spline across the contact boundary.
-                    cut=next((i for i in range(1,len(points)-1)
-                              if np.linalg.norm(right.tcp_pose(points[i])[:3,3]-cube_pose[:3,3])<=.006),len(points)-2)
-                    prefix=world.curve(points[:cut+1],speed=.12)
-                    final=world.curve(points[cut:],speed=.06)
-                    return cut,prefix,final
+                if len(approach)!=len(offsets)+1:
+                    reject('cartesian_ik',completed_waypoints=len(approach),required_waypoints=len(offsets)+1);continue
+                closure=approach[-1].copy();closure[-1]=np.deg2rad(15)
+                closing=world.segment(approach[-1],closure,margin=.001,cube_contact=True)
+                if not closing['safe']:reject('closing',check=closing);continue
+                final=world.curve(approach[cut:],speed=.06) if continuous else None
+                if continuous and not final['safe']:reject('final_curve',check=final);continue
                 start_pose=right.tcp_pose(start);pre_pose=right.tcp_pose(pre['q'])
-                difference=start_pose[:3,3]-pre_pose[:3,3];axis=pre_pose[:3,2]
-                lateral=np.linalg.norm(difference-axis*(axis@difference))
-                if continuous and np.linalg.norm(difference)<.03 and lateral<=.002:
-                    entry=[start,*approach]
-                    cut,direct,final=curve_checks(entry)
-                    if direct['safe'] and final['safe']:
-                        closure=approach[-1].copy();closure[-1]=np.deg2rad(15)
-                        closing=world.segment(approach[-1],closure,margin=.001,cube_contact=True)
-                        if closing['safe']:
-                            result['selected']=dict(waypoints=entry,approach_start_index=0,transit_routed=False,
-                                direct_insertion=True,checks=[closing],grasp_ik=goal,pre_ik=pre,curve_check=direct,
-                                final_start_index=cut,final_curve_check=final)
-                            return result
-                if transit_world.check(approach[0],margin=.001):
-                    result['rejections'].append({'pregrasp':'insufficient buffered transit clearance'});continue
-                insertion=[world.segment(a,b,margin=.001) for a,b in zip(approach[:-1],approach[1:])]
-                if not all(c['safe'] for c in insertion):result['rejections'].append(insertion);continue
-                cut,curve_check,final=curve_checks(approach) if continuous else (None,None,None)
-                if continuous and not (curve_check['safe'] and final['safe']):
-                    result['rejections'].append({'curve':curve_check,'final_curve':final});continue
+                # Judge standby alignment against the original insertion axis;
+                # the deliberate fixed-pad offset itself is not tracking error.
+                difference=start_pose[:3,3]-(pre_pose[:3,3]-rotation[:,0]*lateral);axis=rotation[:,2]
+                off_axis=np.linalg.norm(difference-axis*(axis@difference))
+                detail=dict(grasp_ik=goal,pre_ik=pre,final_curve_check=final,
+                            approach_cube_clearance_m=.005,fixed_pad_offset_m=lateral,pregrasp_distance_m=distance)
+                if continuous and np.linalg.norm(difference)<.03 and off_axis<=.002:
+                    direct=transit_world.curve([start,*approach[:cut+1]],speed=.12)
+                    if direct['safe']:
+                        result['selected']=dict(detail,waypoints=[start,*approach],approach_start_index=0,
+                            transit_routed=False,direct_insertion=True,checks=[closing],curve_check=direct,
+                            final_start_index=cut+1)
+                        return result
+                    reject('direct_curve',check=direct)
+                insertion=[]
+                if not continuous:
+                    insertion=[(transit_world if i<cut else world).segment(a,b,margin=.001)
+                               for i,(a,b) in enumerate(zip(approach[:-1],approach[1:]))]
+                    if not all(c['safe'] for c in insertion):reject('insertion',checks=insertion);continue
+                curve_check=transit_world.curve(approach[:cut+1],speed=.12) if continuous else None
+                if continuous and not curve_check['safe']:reject('approach_curve',check=curve_check);continue
                 first=transit_world.segment(start,opened,margin=.001)
-                if not first['safe']:result['rejections'].append(first);continue
+                if not first['safe']:reject('opening',check=first);continue
                 transit=transit_world.segment(opened,approach[0],margin=.001);route=[opened,approach[0]]
                 if not transit['safe']:
-                    result['rejections'].append(transit)
+                    reject('transit',check=transit)
                     if rrt_attempted:continue
                     rrt_attempted=True
                     transit=transit_world.joint_transit(opened,approach[0])
-                    if not transit['safe']:result['rejections'].append(transit);continue
+                    if not transit['safe']:reject('transit_rrt',check=transit);continue
                     route=transit['waypoints']
-                closure=approach[-1].copy();closure[-1]=np.deg2rad(15)
-                check=world.segment(approach[-1],closure,margin=.001,cube_contact=True)
-                if not check['safe']:result['rejections'].append(check);continue
-                result['selected']={'waypoints':[start,*route,*approach[1:]],
-                    'approach_start_index':len(route),'transit_routed':len(route)>2,
-                    'checks':[first,transit,*insertion,check],'grasp_ik':goal,'pre_ik':pre,'curve_check':curve_check,
-                    'final_start_index':None if cut is None else len(route)+cut,'final_curve_check':final}
+                result['selected']=dict(detail,waypoints=[start,*route,*approach[1:]],
+                    approach_start_index=len(route),transit_routed=len(route)>2,
+                    checks=[first,transit,*insertion,closing],curve_check=curve_check,
+                    final_start_index=len(route)+cut)
                 return result
     return result
 

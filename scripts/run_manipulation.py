@@ -591,9 +591,11 @@ class Episode:
             transport=json.loads(path.read_text()) if path.exists() else {}
             handover_reference=np.asarray(result['receiver_preposition_plan']['selected']['handover_reference_q10'])
             valid=valid_cache(transport,transport_fingerprint(self.model),start_q=start,
-                              right_start=right_start,cube_in_left_tcp=local,handover_reference=handover_reference)
+                              right_start=right_start,cube_in_left_tcp=local,handover_reference=handover_reference,
+                              receiver_continuous=options.motion_mode=='continuous')
             if not valid:
-                transport=compute_plan(plan_transport,self.model,start,local,other_q=right_start,handover_reference=handover_reference)
+                transport=compute_plan(plan_transport,self.model,start,local,other_q=right_start,
+                                       handover_reference=handover_reference,continuous=options.motion_mode=='continuous')
                 path.write_text(json.dumps(jsonable(transport),indent=2))
             result['transport_plan']=transport
             if transport['selected'] is None:raise RuntimeError('No validated transport path')

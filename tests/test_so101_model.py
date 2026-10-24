@@ -8,6 +8,85 @@ from so101_model import SO101Model,calibrate,box_mesh,mesh_box_overlap,triangle_
 
 
 class GeometryTests(unittest.TestCase):
+    def test_transport_skips_candidate_without_complete_receiver_path(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import so101_planning as planner
+        start=np.zeros(6);start[-1]=.36;other=np.zeros(6)
+        model=SimpleNamespace(base=np.eye(4),tcp_pose=lambda q,base=None:np.eye(4),
+                              ik=lambda *args,**kw:[dict(q=np.zeros(6),limit_margin_deg=10.)])
+        def candidates():
+            return [dict(left_q=np.r_[x,np.zeros(5)],right_q=np.zeros(6),interarm_envelope_collisions=[])
+                    for x in (.1,.2)]
+        for answers,selected_x in (([None,dict(checked=True)],.2),([None,None],None)):
+            with self.subTest(selected_x=selected_x), \
+                 patch.object(planner,'handover_candidates',side_effect=lambda *a,**kw:candidates()), \
+                 patch.object(planner,'transport_fingerprint',return_value='test'), \
+                 patch.object(planner,'CollisionWorld') as world, \
+                 patch.object(planner,'carried_segment',return_value=dict(safe=True)), \
+                 patch.object(planner,'plan_receiver',side_effect=[dict(selected=a) for a in answers]) as receiver:
+                world.return_value.check.return_value=[]
+                result=planner.plan_transport(model,start,np.eye(4),other_q=other)
+                self.assertEqual(receiver.call_count,2)
+                if selected_x is None:self.assertIsNone(result['selected'])
+                else:self.assertEqual(result['selected']['left_q'][0],selected_x)
+                for call in receiver.call_args_list:
+                    self.assertEqual(call.args[1][-1],start[-1])
+                    np.testing.assert_array_equal(call.kwargs['start_q'],other)
+                    self.assertTrue(call.kwargs['continuous'])
+
+    def test_buffered_receiver_recovers_two_measured_oct24_failures(self):
+        import copy
+        from so101_planning import plan_receiver,CollisionWorld
+        from benchmark_core import JointPath
+        model=SO101Model();calibrate(model)
+        right=copy.copy(model);right.base=model.base.copy();right.base[0,3]=.25
+        # Measured receiver-plan inputs from 20261024T222926314730Z_seed42,
+        # attempts 1 (early fixed-pad contact) and 5 (no receiver path).
+        cases=[
+            dict(left=[1.553349495,-.402709693,1.124639034,-.833011627,.169103354,.358153284],
+                 start=[-1.602539778,-1.553123951,1.140147090,.567225397,-1.464999557,.785397530],
+                 cube=None,
+                 reference=[-1.602204175,-1.048153821,.992210695,.256754485,-1.719716614,.785398163],
+                 local=[[.995343537,.020571450,-.094170369,-.001158011],[-.020449147,.999788332,.002263657,.000418664],[.094197002,-.000327413,.995553523,-.004662229],[0,0,0,1]],distance=.04),
+            dict(left=[1.504367113,-.455395877,1.110870719,-.765070558,-1.266305447,.362165809],
+                 start=[-1.602539778,-1.553129673,1.140153766,.567220688,-1.464993238,.785397470],
+                 cube=[[-.054381607,-.125629256,-.990585650,-.000193799],[-.963472731,.267130558,.019014794,-.271409303],[.262226883,.955436317,-.135567351,.175796613],[0,0,0,1]],
+                 reference=[-1.557758422,-1.097260239,1.180507927,.067259929,-.269982790,.785398163],distance=.035)]
+        for case in cases:
+            with self.subTest(distance=case['distance']):
+                left=np.array(case['left']);start=np.array(case['start'])
+                cube=model.tcp_pose(left)@case['local'] if case['cube'] is None else np.array(case['cube'])
+                result=plan_receiver(model,left,cube,np.array(case['reference']),continuous=True,start_q=start)
+                selected=result['selected'];self.assertIsNotNone(selected)
+                self.assertEqual(selected['pregrasp_distance_m'],case['distance'])
+                self.assertEqual(selected['fixed_pad_offset_m'],-.004)
+                self.assertGreaterEqual(selected['pre_ik']['limit_margin_deg'],3.)
+                self.assertTrue(all(c['safe'] for c in selected['checks']))
+                self.assertTrue(selected['curve_check']['safe']);self.assertTrue(selected['final_curve_check']['safe'])
+                points=np.array(selected['waypoints']);entry=selected['approach_start_index'];cut=selected['final_start_index']
+                world=CollisionWorld(right,cube[:3,3],other_q=left,other_base=model.base,
+                                     cube_rotation=cube[:3,:3],cube_clearance=.005)
+                if case['distance']==.04:
+                    contact_q=np.array([-1.601570606,-1.401727557,1.042313457,.563628733,-1.721386552,.785395920])
+                    unbuffered=CollisionWorld(right,cube[:3,3],other_q=left,other_base=model.base,
+                                              cube_rotation=cube[:3,:3])
+                    self.assertEqual(unbuffered.check(contact_q,.001),[])
+                    self.assertIn('cube:gripper',world.check(contact_q,.001))
+                # Independently reconstruct the exact two curves the runtime
+                # executes, including the final shared boundary waypoint.
+                prefix=JointPath(points[entry:cut+1],.12);final=JointPath(points[cut:],.06)
+                for u in np.linspace(0,1,31):
+                    self.assertEqual(world.check(prefix.position(u),.001),[])
+                self.assertLess(np.linalg.norm(right.tcp_pose(final.position(1))[:3,3]-cube[:3,3]),.001)
+                for path in (prefix,final):
+                    self.assertTrue(np.all(path.bounds[:,0]>=model.limits[:,0]))
+                    self.assertTrue(np.all(path.bounds[:,1]<=model.limits[:,1]))
+                if case['distance']==.035:
+                    self.assertTrue(selected['transit_routed'])
+                    rejected=[a for a in result['rejections'] if a['stage']=='pregrasp_limit' and a['lateral_m']==0]
+                    self.assertAlmostEqual(rejected[0]['limit_margin_deg'],2.817,places=2)
+
     def test_lift_fallback_recovers_measured_empty_ik_cases_without_relaxing_limits(self):
         from so101_planning import plan_lift,lift_ik_groups
         model=SO101Model();calibrate(model)
@@ -35,6 +114,7 @@ class GeometryTests(unittest.TestCase):
         transport=plan_transport(model,start,local,other_q=right,handover_reference=reference)
         self.assertIsNotNone(transport['selected'])
         selected=transport['selected'];self.assertTrue(selected['buffered_receiver_pregrasp'])
+        self.assertIsNotNone(selected['predicted_receiver_plan']['selected'])
         cube=model.tcp_pose(selected['left_q'])@local
         receiver=plan_receiver(model,selected['left_q'],cube,selected['right_q'],continuous=True,start_q=right)
         self.assertIsNotNone(receiver['selected'])
