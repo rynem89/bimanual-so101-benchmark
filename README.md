@@ -83,8 +83,9 @@ physical stages succeeded with zero forbidden contacts in **114.88 simulated
 seconds each**, including the 3 s reset. The previous coordinated version took
 **134.12 s** and the sequential reference **153.18 s**. That is **14.3% shorter
 than the previous version**. Excluding reset, the shorter motion would mean about
-14.7% fewer 20 Hz observation/action rows if later recorded. No demonstrations
-have been recorded for this revision.
+14.7% fewer 20 Hz observation/action rows if later recorded. No demonstration
+dataset is currently retained for this revision; the prior pilot batches were
+rejected and deleted at the owner’s request.
 
 The cold run took **232.24 s wall time**, including **64.81 s of stage planning**.
 The aligned receiver insertion needed **6.61 s planning**; the new return/carry
@@ -125,22 +126,93 @@ A demonstration is a **recorded physical expert episode**, not an IK solution or
 a video alone. Each 20 Hz row pairs three RGB images and measured joint state
 with the absolute joint target applied over the next three physics ticks.
 
-Inspect the preserved pilot without recording anything:
+### Generate your own demonstrations
+
+Use **`scripts/collect_demos.py`**. It calls the existing coordinated expert,
+recorder and `so101.py dataset review`; it does not implement another controller.
+You choose the ranges and run collection yourself. Activate `leisaac-sim` in each
+new terminal using [step 1](#1-setup), including the asset path and thread settings.
+No packages need installing.
+
+- `--count 10` asks for **10 successful physical demonstrations**, not 10 attempts.
+- `--max-attempts 20` caps simulation attempts, including failures. Default is
+  three times `--count`. Collection stops at the success target or the cap/available
+  distinct poses. An unmet target returns a nonzero exit code and the actual count.
+- `--x-offset-cm MIN MAX` and `--y-offset-cm MIN MAX` are **centimetres relative
+  to nominal cube centre X = −0.34 m, Y = −0.04 m**. For example, X offset +2 cm
+  means world X = −0.32 m. Negative/positive offsets follow the world axes.
+- `--yaw-deg MIN MAX` controls cube rotation about the vertical axis in degrees.
+- `--seed 42` reproduces the candidate ordering with the same ranges, count,
+  attempt cap and unchanged model. Keep all these arguments identical between
+  preview and recording.
+
+The examples below request a **6 cm × 4 cm** region and yaw ±6°. These are
+user-selected sampling bounds, not a claim that every pose will work. The sampler
+stratifies the requested region, filters candidates, then chooses spread-out
+positions at least **5 mm apart in XY**. It never substitutes the old small range.
+Preview prints requested bounds, proposed world X/Y/yaw and actual feasible
+coverage, plus rejection counts. If insufficient distinct poses are found, it
+fails before simulation; change the ranges, seed or count explicitly.
+
+Before recording, the geometry filter checks the **whole rotated 40 mm cube** is
+supported by the table with a 10 mm edge margin, clear of the bin and both HOME
+robots, and has valid open-gripper pregrasp/grasp IK under the existing joint
+limits and collision checks. This establishes initial geometric feasibility;
+**it does not prove a full collision-free task or physical success**. The expert
+still checks complete motion and applies all existing contact/drop/grasp guards.
+
+**1. Preview only — no simulator, recording or output files:**
 
 ```bash
-python scripts/so101.py dataset inspect --quality-report outputs/protocol_v1_pilot_qa/quality.json --ledger outputs/protocol_v1_pilot_run/attempts.jsonl
-python scripts/so101.py dataset review --episode datasets/protocol_v1_pilot/pilot_008_20261023T171324135324Z --output outputs/reviews/nominal.html
+python scripts/collect_demos.py --count 10 --max-attempts 20 \
+  --x-offset-cm -3 3 --y-offset-cm -2 2 --yaw-deg -6 6 --seed 42 \
+  --preview-only
 ```
 
-Open the printed HTML address locally. Scrub the three synchronized images with
-the measured joints and next action. Use a new HTML output name when repeating.
-For all 12 attempts, open `outputs/protocol_v1_pilot_report/index.html` locally.
-These recordings are local and intentionally absent from GitHub.
+**2. Record visibly in Isaac Sim:**
 
-**No final collection is authorized.** The consumed pilot is excluded from
-training. Review all 12 videos/data first; future train/validation attempts need
-separate approval. Failed attempts must remain counted.
-[Design, fields, QA, replay and conversion procedure](docs/DATASET.md).
+```bash
+python scripts/collect_demos.py --count 10 --max-attempts 20 \
+  --x-offset-cm -3 3 --y-offset-cm -2 2 --yaw-deg -6 6 --seed 42 \
+  --gui
+```
+
+**3. Record without the GUI, with the same three cameras and HTML reviews:**
+
+```bash
+python scripts/collect_demos.py --count 10 --max-attempts 20 \
+  --x-offset-cm -3 3 --y-offset-cm -2 2 --yaw-deg -6 6 --seed 42 \
+  --headless
+```
+
+GUI is the default. Each attempt launches the existing expert, resets the scene,
+records one pose and closes Isaac on completion; the next attempt starts fresh.
+Use **Ctrl+C in the terminal** to stop the whole collection. Closing one attempt's
+window early can count as a failure and advance to the next candidate.
+
+The script prints a new run directory under
+`datasets/generated_demos/<UTC timestamp>_seed42/`:
+
+| Location inside that run | What it contains |
+| --- | --- |
+| `successful/<episode>/` | Finalized recordings with independent pickup/lift/handover/placement success; existing raw schema, three RGB streams, measured states and held actions |
+| `failed/<episode>/` | Failed or interrupted recordings, kept separately and never counted toward `--count` |
+| `reviews/attempt_0001.html`, etc. | One interactive three-camera/state/action review per recording, where enough data exists; images stay in the corresponding episode |
+| `attempts/attempt_0001/`, etc. | The exact cube-case input, expert log and normal controller outputs; startup failures can have logs without a recording |
+| `summary.json` | Cube XY/yaw/seed, physical and collection result, duration, failure reason, episode and review paths, actual successful/failed counts |
+
+A failed grasp, drop, contact guard or other failure remains recorded; the script
+tries another feasible position up to the cap. It does not relax safety checks.
+HTML generation uses the existing review command and its built-in format checks;
+no separate dataset QA, plots, physical replay or training runs are added.
+Physical success is **not human acceptance or permission to train**. Review the
+images and actions yourself; conversion/training still require their existing
+separate approvals. The old pilot directories and their review links were
+superseded and deleted at the owner's request.
+
+**Implementation verification is limited to argument handling and geometric pose
+previews. GUI/headless collection with this new helper has not been run by the
+assistant.** [Raw format and learning procedure](docs/DATASET.md#raw-attempt-layout).
 
 ## 5. ACT and Diffusion
 
@@ -169,11 +241,12 @@ of convergence or manipulation success.
 
 ## 6. Evaluation
 
-You can replay an existing recording now, in a fresh `leisaac-sim` terminal
-activated as in step 1:
+After you generate a recording, you can replay its actual actions in a fresh
+`leisaac-sim` terminal activated as in step 1. Replace the capitalized path parts
+with a successful episode from your run’s `summary.json`:
 
 ```bash
-python scripts/so101.py replay --episode datasets/protocol_v1_pilot/pilot_008_20261023T171324135324Z --output outputs/replay_nominal_manual
+python scripts/so101.py replay --episode datasets/generated_demos/RUN_ID/successful/EPISODE_DIRECTORY --output outputs/replay_manual
 ```
 
 Replay sends recorded targets to real simulated actuators and the independent
@@ -210,19 +283,20 @@ not override it.
 | Sequential reference pickup, lift, handover, placement and automatic reset | Coordinated Stage 1 controller GUI approval; broad-distribution reliability and hardware transfer |
 | Improved coordinated nominal controller: 2/2 final-revision physics successes, zero forbidden contacts | Owner GUI approval and other starting-pose validation |
 | Approved frozen overhead + two wrist cameras; owner accepted scene/HTML workflow and guide fix | Physical camera-mount registration and hardware calibration |
-| 12/12 physical pilot successes, 12/12 automated QA passes, 3/3 selected physical replays | Human acceptance of all 12 demonstrations; the other nine physical replays |
+| Historical pilot/reference results remain documented; rejected pilot data was deleted by owner approval | No retained or human-accepted demonstration corpus; no new helper collection run by the assistant |
 | Official ACT/Diffusion command/config preflight and guarded inference interface | Accepted training corpus, optimizer updates, trained inference and learned task success |
 
-The provisional design proposes 100 train /20 validation attempts and 100
-held-out evaluation cases. **Collection, augmentation and all policy training
-remain unauthorized.** Repository consolidation and the exact eight-file/four-branch
-cleanup received separate owner approval; it does not authorize learning work.
-Camera/protocol JSON bytes, scene, physics, IK solver, evaluator and action
-semantics remain fixed. Stage 1 authorizes the coordinated controller and your
-manual GUI inspection only. Ten new demonstrations and their HTML reviews wait
-for your explicit Stage 2 approval. Your subsequent request authorizes focused
-non-recording physics verification and timing, not collection, dataset QA, replay
-or training. [Earlier pilot details](docs/DATASET.md#measured-pilot-results).
+The owner now controls dataset generation through `scripts/collect_demos.py`.
+The former 12-case pilot and the rejected `coordinated_pilot_10` batch and its
+outputs were deleted with explicit approval. Reference benchmark evidence,
+source/configurations, approved cameras and recovery tags are preserved.
+
+The assistant is authorized to implement this helper and verify arguments/pose
+previews only, **not generate another dataset**. No accepted training corpus or
+trained policy exists. Final protocol collection, augmentation, conversion and
+training retain their separate approval gates. The earlier 100/20/100 design is
+historical context, not authorization to collect. Controller, cameras, scene,
+physics, evaluator and action semantics remain unchanged by this helper.
 
 ## Code, detailed guides and historical records
 
@@ -247,15 +321,15 @@ they are not a second operating procedure.
 ## Outputs and repository integration
 
 Source/configs/tests are versioned. Raw data, weights and generated outputs stay
-local. The 107,394 pilot PNGs are three original lossless image streams plus
-terminal diagnostics, not redundant scripts. Preserve the recordings, QA reports,
-reference benchmark and camera-approval evidence. Disposable caches removed in
-the previous cleanup are **not counted again**; this pass found no identical
-stationary PNG previews to delete. [What remains and why](docs/ARCHITECTURE.md#local-outputs).
+local. Superseded pilot recordings and their generated reviews/reports were
+deleted with the owner's explicit approval. Preserve the reference benchmark,
+camera-approval evidence, source/configurations, Git history and recovery tags.
+New user-generated runs live under `datasets/generated_demos/` with successful
+and failed recordings separated. Human acceptance is still required.
 
-The approved consolidation is complete: **41 tracked files, four active detailed
-guides, 13 Python scripts, four configurations and seven tests**. The sole branch
-is `main`; the four incorporated feature branches have been retired locally and
-on GitHub. The [consolidation record](docs/ARCHITECTURE.md#consolidation-record)
-lists the eight exact file removals and before/after counts. Git history and all
-existing recovery tags are preserved. No new branch or tag was created.
+The current tree has **42 tracked files, four active detailed guides, 14 Python
+scripts, four configurations and seven tests** after adding this one collector.
+The sole branch is `main`; no new branch was created. The historical
+[consolidation record](docs/ARCHITECTURE.md#consolidation-record) describes the
+previous eight-file retirement and its then-current counts. Existing recovery
+tags are preserved.
