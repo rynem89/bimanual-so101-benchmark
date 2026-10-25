@@ -17,6 +17,15 @@ from policy_cameras import CALIBRATION_SHA256
 
 
 class CommandTests(unittest.TestCase):
+    def test_conversion_preserves_multiple_explicit_raw_roots(self):
+        args=so101.parser().parse_args(['dataset','convert','--raw','/tmp/approved-a','/tmp/approved-b',
+            '--quality-report','/tmp/acceptance.json','--output','/tmp/converted'])
+        with patch('so101.launch',return_value=0) as launch:
+            so101.dispatch(args)
+        command=launch.call_args.args[0];index=command.index('--raw')
+        self.assertEqual(command[index+1:index+3],['/tmp/approved-a','/tmp/approved-b'])
+        self.assertTrue(launch.call_args.kwargs['dry_run'])
+
     def test_collection_distinguishes_completed_physics_from_interruption(self):
         evaluation=dict(success=True,stages={s:True for s in ('pickup','lift','handover','placement')})
         meta=dict(success=True,evaluation=evaluation)
@@ -156,6 +165,37 @@ class CommandTests(unittest.TestCase):
 
 
 class TrainingGates(unittest.TestCase):
+    def test_editable_act_preflight_never_creates_optimizer_or_launches_trainer(self):
+        import torch
+        from unittest.mock import Mock
+        class SyntheticDataset:
+            num_episodes=1
+            rgb_dtype=torch.uint8
+            meta=SimpleNamespace(episodes=[dict(dataset_from_index=0,dataset_to_index=3)])
+            def __len__(self):return 3
+            def __getitem__(self,index):
+                row={'observation.state':torch.zeros(24),'action':torch.zeros(2,12),
+                     'action_is_pad':torch.tensor([False,index==2])}
+                row.update({f'observation.images.{name}':torch.zeros(3,480,640,dtype=self.rgb_dtype)
+                            for name in ('overview','left_wrist','right_wrist')})
+                return row
+        config=SimpleNamespace(policy=SimpleNamespace(type='act',device='cpu',chunk_size=2),
+            dataset=SimpleNamespace(root=self.root),validate=Mock(),to_dict=lambda:dict(synthetic=True))
+        args=SimpleNamespace(training_args=['--','--policy.type=act'],inspect_model=False,report=None)
+        for dtype in (torch.uint8,torch.float32):
+            SyntheticDataset.rgb_dtype=dtype
+            with self.subTest(dtype=dtype), \
+                 patch('policy_pipeline.parse_official_training',return_value=config), \
+                 patch('lerobot.datasets.factory.make_dataset',return_value=SyntheticDataset()), \
+                 patch('torch.cuda.is_available',return_value=False), \
+                 patch('torch.optim.AdamW',side_effect=AssertionError('Optimizer forbidden')), \
+                 patch('subprocess.run',side_effect=AssertionError('Trainer launch forbidden')), \
+                 redirect_stdout(io.StringIO()) as output:
+                policy_pipeline.check_training(args)
+            result=json.loads(output.getvalue())
+            self.assertFalse(result['training_executed']);self.assertFalse(result['optimizer_created'])
+            self.assertEqual(result['sampled_rows'],[0,1,2])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

@@ -75,8 +75,9 @@ instead of going around to a different handover pose. After verified transfer
 and finger separation, the receiver makes one continuous move to the basket
 while the donor returns HOME. The collision checker validates both moving arms
 and the carried cube together. Existing checked fallback routes remain available.
-**Your GUI approval of this revision is still required.** Historical pilot
-successes describe the earlier sequential controller.
+The owner accepted 15 varied demonstrations under this controller. Historical
+pilot successes describe the earlier sequential controller; broader reliability
+remains to be measured.
 
 The improved nominal task passed **two non-recording visible Isaac runs**: all four
 physical stages succeeded with zero forbidden contacts in **114.88 simulated
@@ -85,8 +86,8 @@ seconds each**, including the 3 s reset. The previous coordinated version took
 than the previous version**. Excluding reset, the shorter motion would mean about
 14.7% fewer 20 Hz observation/action rows if later recorded. The owner’s current diagnostic PNG batch remains preserved locally; it is not
 an accepted training corpus. These nominal timings describe the pre-repair
-controller. The current collection/controller repair has only offline verification
-and still needs the owner’s physical GUI/headless tests.
+controller. The owner subsequently recorded and visually accepted the 15
+successful varied demonstrations listed in step 5; broader reliability is unmeasured.
 
 The cold run took **232.24 s wall time**, including **64.81 s of stage planning**.
 The aligned receiver insertion needed **6.61 s planning**; the new return/carry
@@ -260,28 +261,78 @@ further collection. [Legacy raw field definitions](docs/DATASET.md#raw-attempt-l
 
 ## 5. ACT and Diffusion
 
-There is **no accepted training dataset or trained policy in the reset pipeline**.
-Both future policies will use official LeRobot implementations and the same
-approved three-camera/joint observations. They predict joint-action chunks;
-they do not run expert IK during inference.
+The owner approved **15 successful, visually reviewed demonstrations** from the
+seed43 batch (5) and seed44 batch (10). They are prepared locally at
+**`datasets/lerobot/so101_act15/`**: 15 episodes, 38,038 paired rows, three
+640×480 cameras at 20 Hz, 24 state values and 12 absolute joint targets.
+Original recordings are preserved. Failures and rejected pilots are excluded.
+There is **no trained model**; no optimizer updates have been executed.
 
-Switch this terminal to the existing learning environment:
+The first proposed ACT run is **2,000 steps, batch 4, chunk 64, execute 8,
+seed 17**, using official LeRobot 0.6.1 ACT, AdamW and its masked L1 + KL loss.
+This is an editable starting experiment. The existing `matched-v1` recipe
+(100k steps, batch 8) remains unchanged. All 15 episodes are training data;
+this preparation supplies no validation/held-out policy result.
+
+**1. Activate the learning environment in each terminal:**
 
 ```bash
+cd /home/rynem8/robotics/bimanual-so101-benchmark
 source /home/rynem8/miniforge3/etc/profile.d/conda.sh
 conda activate so101-il-py312
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
-python scripts/so101.py train --policy act --config matched-v1 --dataset datasets/lerobot_train --output checkpoints/act_seed17 --seed 17
-python scripts/so101.py train --policy diffusion --config matched-v1 --dataset datasets/lerobot_train --output checkpoints/diffusion_seed17 --seed 17
+export TORCH_HOME="$PWD/outputs/torch"
+export HF_HOME="$PWD/outputs/huggingface"
 ```
 
-These are **preflight commands**, not training. They show the official command and
-check configuration/data. They currently reject the missing accepted dataset.
-After approved collection, QA and conversion, actual training needs explicit
-execution flags and a genuine hash-bound approval record. See the
-[complete policy procedure](docs/POLICIES.md) for inputs, horizons, reasons for the
-recipe, training, checkpoints and resume. Do not treat config parsing as evidence
-of convergence or manipulation success.
+The ImageNet ResNet-18 weights are already cached under `TORCH_HOME`; no download
+is needed. CUDA was checked on the RTX 5090. Training memory/throughput has not
+been measured.
+
+**2. Check the prepared dataset without training:**
+
+```bash
+python scripts/policy_pipeline.py check-training -- \
+  --policy.type=act --policy.push_to_hub=false --policy.device=cuda \
+  --dataset.repo_id=local/so101 --dataset.root=datasets/lerobot/so101_act15 \
+  --dataset.video_backend=pyav --dataset.eval_split=0 \
+  --policy.chunk_size=64 --policy.n_action_steps=8 \
+  --output_dir=checkpoints/act15_seed17_2k
+```
+
+This uses the official dataset reader and samples action chunks from every
+episode. For the full experiment configuration preview and exact parameter
+counts, follow [the editable arguments and preview procedure](docs/POLICIES.md#4-choose-and-preview-the-experiment).
+
+**3. Start training yourself only when ready. This command performs updates:**
+
+```bash
+lerobot-train \
+  --policy.type=act \
+  --dataset.repo_id=local/so101 \
+  --dataset.root=datasets/lerobot/so101_act15 \
+  --output_dir=checkpoints/act15_seed17_2k \
+  --steps=2000 --batch_size=4 \
+  --policy.optimizer_lr=0.00001 \
+  --policy.optimizer_lr_backbone=0.00001 \
+  --policy.optimizer_weight_decay=0.0001 \
+  --policy.kl_weight=10 \
+  --policy.chunk_size=64 --policy.n_action_steps=8 --policy.n_obs_steps=1 \
+  --save_freq=500 --log_freq=20 --seed=17 --num_workers=4 \
+  --policy.device=cuda --policy.use_amp=false \
+  --policy.pretrained_backbone_weights=ResNet18_Weights.IMAGENET1K_V1 \
+  --use_policy_training_preset=true --cudnn_deterministic=true \
+  --dataset.video_backend=pyav --dataset.image_transforms.enable=false \
+  --dataset.eval_split=0 --eval_steps=0 --env_eval_freq=0 \
+  --policy.push_to_hub=false --save_checkpoint_to_hub=false --wandb.enable=false
+```
+
+Change these CLI values for later experiments and choose a fresh `--output_dir`.
+Checkpoints will appear under `checkpoints/act15_seed17_2k/checkpoints/`, every
+500 updates and at the final step. The assistant has **not run this command**.
+[Step-by-step procedure, data provenance, every parameter, model explanation,
+loss monitoring, GPU memory, resume and final-checkpoint inspection](docs/POLICIES.md).
+No Diffusion run or simulator evaluation starts as part of ACT preparation.
 
 ## 6. Evaluation
 
@@ -315,7 +366,7 @@ python scripts/so101.py evaluate run --socket /tmp/so101-act.sock --manifest out
 
 Use the same declared cases, reset, physics, 20 Hz action interface and evaluator
 for expert, ACT and Diffusion. Report all failures and stage/full-task success.
-[Inference details and fair comparison](docs/POLICIES.md#validation-and-fair-evaluation).
+[Inference details and fair comparison](docs/POLICIES.md#9-future-evaluation-and-comparison).
 
 ## Project status
 
@@ -324,23 +375,26 @@ not override it.
 
 | Established by evidence | Still unverified / not approved |
 | --- | --- |
-| Sequential reference pickup, lift, handover, placement and automatic reset | Coordinated Stage 1 controller GUI approval; broad-distribution reliability and hardware transfer |
-| Improved coordinated nominal controller: 2/2 final-revision physics successes, zero forbidden contacts | Owner GUI approval and other starting-pose validation |
+| Sequential reference pickup, lift, handover, placement and automatic reset | Broad-distribution reliability and hardware transfer |
+| Coordinated expert: nominal reference and 15 owner-recorded, visually accepted varied successes | Reliability outside the accepted starting cases |
 | Approved frozen overhead + two wrist cameras; owner accepted scene/HTML workflow and guide fix | Physical camera-mount registration and hardware calibration |
-| Historical pilot/reference results remain documented; rejected pilot data was deleted by owner approval | Diagnostic PNG collection is preserved; current repair has no physical acceptance or newly collected corpus |
-| Official ACT/Diffusion command/config preflight and guarded inference interface | Accepted training corpus, optimizer updates, trained inference and learned task success |
+| Owner accepted 15 seed43/seed44 demonstrations; converted ACT data and recorded-data checks prepared | Training usefulness, generalization and hardware transfer |
+| Official ACT parser/reader/model preflight and manual training procedure; matched-v1 preserved | Optimizer updates, trained inference and learned task success |
 
 The owner now controls dataset generation through `scripts/collect_demos.py`.
 The former 12-case pilot and the rejected `coordinated_pilot_10` batch and its
 outputs were deleted with explicit approval. Reference benchmark evidence,
 source/configurations, approved cameras and recovery tags are preserved.
 
-The assistant is authorized to repair this collector/controller and run focused
-offline tests/encoding benchmarks, **not generate another dataset**. No accepted training corpus or
-trained policy exists. Final protocol collection, augmentation, conversion and
-training retain their separate approval gates. The earlier 100/20/100 design is
-historical context, not authorization to collect. Cameras, scene, physics, evaluator and action semantics remain unchanged. Lift
-candidate/receiver planning changes await owner physical validation.
+For this milestone the assistant is authorized to validate and convert only the
+15 owner-approved recordings, prepare editable ACT commands and run focused
+configuration/reader checks. Training is **user-controlled**: the assistant must
+not start updates, new collection, Diffusion or evaluation. Acceptance is recorded
+at `outputs/act15_preparation/acceptance.json`; conversion provenance is inside
+the prepared dataset. No new physical replay or independent visual acceptance is
+claimed. The earlier 100/20/100 protocol remains historical context. Cameras,
+scene, controller, physics, evaluator, environment locks and action semantics are
+unchanged by this preparation.
 
 ## Code, detailed guides and historical records
 
@@ -369,7 +423,8 @@ local. Superseded pilot recordings and their generated reviews/reports were
 deleted with the owner's explicit approval. Preserve the reference benchmark,
 camera-approval evidence, source/configurations, Git history and recovery tags.
 New user-generated runs live under `datasets/generated_demos/` with successful
-and failed recordings separated. Human acceptance is still required.
+and failed recordings separated. The 15 episodes in step 5 have owner acceptance;
+other runs require their own acceptance.
 
 The current tree has **42 tracked files, four active detailed guides, 14 Python
 scripts, four configurations and seven tests** after adding this one collector.

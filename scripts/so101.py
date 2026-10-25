@@ -88,7 +88,7 @@ def parser() -> argparse.ArgumentParser:
     q.add_argument("--ledger", type=Path)
     q.add_argument("--review-video", action="store_true")
     q = data.add_parser("convert", help="Approved raw partition to LeRobot v3; preview by default")
-    q.add_argument("--raw", type=Path, required=True)
+    q.add_argument("--raw", type=Path, nargs="+", required=True, help="One or more approved raw episode directories")
     q.add_argument("--quality-report", type=Path, required=True)
     q.add_argument("--output", type=Path, required=True)
     q.add_argument("--execute", action="store_true")
@@ -160,7 +160,8 @@ def append_options(command, args, names):
             continue
         command.append("--" + name.replace("_", "-"))
         if value is not True:
-            command.append(str(value.resolve()) if isinstance(value, Path) else str(value))
+            values = value if isinstance(value, list) else [value]
+            command.extend(str(item.resolve()) if isinstance(item, Path) else str(item) for item in values)
 
 
 def inspect_dataset(args) -> int:

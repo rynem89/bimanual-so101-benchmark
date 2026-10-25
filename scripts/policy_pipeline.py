@@ -137,29 +137,106 @@ def train_official(args):
     raise SystemExit(subprocess.run(command,check=False).returncode)
 
 
+def check_training(args):
+    """Parse editable official ACT flags and sample data; never call the trainer."""
+    import copy
+    import sys
+    import torch
+    from lerobot.datasets.factory import make_dataset
+
+    flags=args.training_args
+    if flags[:1]==['--']:flags=flags[1:]
+    config=parse_official_training([sys.executable,'-m','lerobot.scripts.lerobot_train',*flags])
+    if config.policy.type!='act':raise ValueError('This preparation check is for ACT')
+    if '--policy.device=cuda' in flags and config.policy.device!='cuda':
+        raise ValueError('Requested CUDA is unavailable in this process; check the learning environment and GPU access')
+    config.validate()  # Resolves the official AdamW configuration, not an optimizer.
+    proof=training_dataset_proof(Path(config.dataset.root))
+    dataset=make_dataset(config)
+    samples=[];image_dtypes=set()
+    for episode in dataset.meta.episodes:
+        first,last=int(episode['dataset_from_index']),int(episode['dataset_to_index'])-1
+        for index in sorted({first,(first+last)//2,last}):
+            sample=dataset[index]
+            if sample['observation.state'].shape!=(24,) or sample['action'].shape!=(config.policy.chunk_size,12):
+                raise ValueError('Invalid ACT state/action chunk')
+            if not torch.isfinite(sample['action']).all() or not torch.isfinite(sample['observation.state']).all():
+                raise ValueError('Nonfinite ACT training sample')
+            for camera in ('overview','left_wrist','right_wrist'):
+                image=sample[f'observation.images.{camera}']
+                if image.shape!=(3,480,640) or image.dtype not in (torch.uint8,torch.float32):
+                    raise ValueError('Invalid ACT RGB sample')
+                if image.dtype==torch.float32 and (not torch.isfinite(image).all() or image.min()<0 or image.max()>1):
+                    raise ValueError('Official float RGB samples must be in [0,1]')
+                image_dtypes.add(str(image.dtype))
+            if index==last and (sample['action_is_pad'][0] or not sample['action_is_pad'][1:].all()):
+                raise ValueError('ACT chunks do not pad at the episode boundary')
+            samples.append(index)
+    result=dict(training_executed=False,optimizer_created=False,config=config.to_dict(),dataset_proof=proof,
+                episodes=dataset.num_episodes,frames=len(dataset),sampled_rows=samples,
+                observation_state_shape=[24],camera_tensor_shape=[3,480,640],camera_tensor_dtypes=sorted(image_dtypes),
+                action_chunk_shape=[config.policy.chunk_size,12],cuda_available=torch.cuda.is_available())
+    if result['cuda_available']:
+        result['cuda_device']=torch.cuda.get_device_name(0)
+    if args.inspect_model:
+        from torchvision.models import ResNet18_Weights
+        from lerobot.policies.factory import make_policy
+        weights=ResNet18_Weights.IMAGENET1K_V1
+        if config.policy.pretrained_backbone_weights!='ResNet18_Weights.IMAGENET1K_V1':
+            raise ValueError('Model inspection expects the proposed ImageNet ResNet18 initialization')
+        cached=Path(torch.hub.get_dir())/'checkpoints'/weights.url.rsplit('/',1)[-1]
+        if not cached.is_file():raise FileNotFoundError(f'ImageNet weights need an explicit download: {cached}')
+        checksum=file_sha256(cached)
+        if not checksum.startswith('f37072fd'):raise ValueError('Cached ResNet18 checksum differs from torchvision')
+        model_config=copy.deepcopy(config.policy);model_config.device='cpu'
+        policy=make_policy(model_config,ds_meta=dataset.meta)
+        result['model']=dict(total_parameters=sum(p.numel() for p in policy.parameters()),
+            trainable_parameters=sum(p.numel() for p in policy.parameters() if p.requires_grad),
+            input_features={name:list(feature.shape) for name,feature in policy.config.input_features.items()},
+            output_features={name:list(feature.shape) for name,feature in policy.config.output_features.items()},
+            parameter_counts_by_component={name:sum(p.numel() for p in module.parameters())
+                                           for name,module in policy.model.named_children()},
+            inspection_device='cpu',training_device=config.policy.device,
+            pretrained_weights=str(cached),pretrained_weights_sha256=checksum)
+    if args.report:
+        args.report.parent.mkdir(parents=True,exist_ok=True)
+        args.report.write_text(json.dumps(result,indent=2)+'\n')
+    print(json.dumps(result,indent=2))
+
+
 def convert(args):
     from PIL import Image
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from demonstration_pipeline import episode_digest, CALIBRATION_SHA256
     quality=json.loads(args.quality_report.read_text())
+    roots=[args.raw] if isinstance(args.raw,Path) else args.raw
+    roots=[root.resolve() for root in roots]
+    if len(set(roots))!=len(roots):raise ValueError('Duplicate raw roots')
+    reviewed_roots=quality.get('raw_roots',[quality.get('raw_root')])
     if (not quality.get('ready_for_conversion') or quality.get('camera_config_sha256')!=CALIBRATION_SHA256
-        or quality.get('raw_root')!=str(args.raw.resolve())):
-        raise ValueError('Require complete automatic + human acceptance for this exact raw root and frozen cameras')
+        or set(reviewed_roots)!={str(root) for root in roots}):
+        raise ValueError('Require automatic checks + human acceptance for these exact raw roots and frozen cameras')
+    if any(args.output.resolve().is_relative_to(root) for root in roots):
+        raise ValueError('Converted output must be outside preserved raw roots')
+    inventory=sorted(root for raw in roots for root in raw.iterdir() if root.is_dir())
+    if len({root.resolve() for root in inventory})!=len(inventory):raise ValueError('Duplicate raw episodes')
     approved={row['path']:row for row in quality['episodes'] if row['accepted']}
     reviewed_paths={row['path'] for row in quality['episodes'] if 'path' in row}
-    if {str(root.resolve()) for root in args.raw.iterdir() if root.is_dir()}!=reviewed_paths:
+    if {str(root.resolve()) for root in inventory}!=reviewed_paths:
         raise ValueError('Raw attempt inventory changed after QA; validate again')
     attempts=[];accepted=[]
-    for root in sorted(args.raw.iterdir()):
-        if root.is_dir() and not (root/'episode.json').exists():
+    for root in inventory:
+        if not (root/'episode.json').exists():
             attempts.append(dict(path=str(root),success=False,status='incomplete'))
-    for path in sorted(args.raw.glob('*/episode.json')):
+    for path in (root/'episode.json' for root in inventory if (root/'episode.json').exists()):
         meta=json.loads(path.read_text());attempts.append(dict(path=str(path.parent),success=meta['success'],case=meta['case'],
             failure=meta.get('evaluation',{}).get('failure'),source_revision=meta.get('source_revision')))
         if str(path.parent.resolve()) in approved:
             proof=approved[str(path.parent.resolve())]
             if not proof['automatic_pass'] or episode_digest(path.parent)!=proof['digest']:
                 raise ValueError('Raw bytes changed after human/automatic acceptance')
+            if not meta['success'] or not meta.get('evaluation',{}).get('success') or meta.get('interrupted'):
+                raise ValueError('Accepted inventory contains a failed or interrupted recording')
             validate_episode(path.parent);accepted.append((path.parent,meta))
     if len(accepted)!=len(approved):raise ValueError('Accepted episode missing from raw root')
     if not accepted:raise RuntimeError('No physically successful demonstrations')
@@ -176,6 +253,7 @@ def convert(args):
     provenance=[]
     try:
         for root,meta in accepted:
+            print(f'Converting episode {len(provenance)+1}/{len(accepted)}: {root.name}',flush=True)
             if list(meta['cameras'])!=cameras or meta['image_shape']!=[height,width,channels]:
                 raise ValueError('Inconsistent camera configuration')
             with np.load(root/'trajectory.npz') as data, closing(episode_rgb(root,meta)) as images:
@@ -319,7 +397,12 @@ def serve(args):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);commands=parser.add_subparsers(dest='command',required=True)
-    p=commands.add_parser('convert');p.add_argument('--raw',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+    p=commands.add_parser('check-training',help='Parse official ACT flags and sample all episodes; no training or optimizer')
+    p.add_argument('--inspect-model',action='store_true',help='Count the official model on CPU using cached weights only')
+    p.add_argument('--report',type=Path,help='Optional local JSON verification output')
+    p.add_argument('training_args',nargs=argparse.REMAINDER,help='Pass editable lerobot-train flags after --')
+    p.set_defaults(function=check_training)
+    p=commands.add_parser('convert');p.add_argument('--raw',type=Path,nargs='+',required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--quality-report',type=Path,required=True,help='Accepted automatic + human demonstration QA report')
     p.set_defaults(function=convert)
     p=commands.add_parser('prepare-training',help='Print official training command only; never execute updates')
